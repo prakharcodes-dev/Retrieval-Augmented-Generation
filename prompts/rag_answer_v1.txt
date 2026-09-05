@@ -1,0 +1,16 @@
+CONTEXT:
+{context}
+
+QUESTION:
+{question}
+
+INSTRUCTIONS:
+- Answer the question using ONLY the provided context.
+- Extract the exact, direct answer when available.
+- Do not use outside knowledge or invent facts.
+- If the answer is not present or sufficient evidence is missing, state clearly: "I couldn't find sufficient evidence in the provided documents to answer that question."
+- Give a concise, direct answer in clean natural English.
+- Do NOT output internal placeholders, tags, or template artifacts (such as <excerpt_1>, <excerpt_5>, <context>, [INST]).
+- Do NOT generate inline citations or page numbers in the answer text; answer directly.
+
+Answer:

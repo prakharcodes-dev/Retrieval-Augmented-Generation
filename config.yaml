@@ -1,0 +1,21 @@
+chunking:
+  chunk_size: 700
+  chunk_overlap: 100
+
+retrieval:
+  vector_top_k: 5
+
+vector_store:
+  provider: chroma
+  persist_dir: ./vectorstore
+  collection_name: rag_documents
+
+embedding:
+  provider: openai
+  model: text-embedding-3-small
+
+llm:
+  provider: qwen_lora
+  base_model: Qwen/Qwen2.5-3B-Instruct
+  adapter_path: D:\Training\trained_model
+  temperature: 0.0
