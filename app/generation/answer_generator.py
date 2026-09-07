@@ -113,6 +113,76 @@ class RAGGenerator:
         """Extracts unique citation metadata from retrieved chunks."""
         return CitationFormatter.extract_citations(chunks)
 
+    def _is_overview_query(self, query: str) -> bool:
+        """Detects if user is asking for a document summary, overview, or general description."""
+        q = query.lower().strip()
+        patterns = [
+            r"\b(about|summary|overview|describe|explain|details|summarize|content|contents)\b",
+            r"\bwhat (is|does) (this|the) (document|file|pdf|txt|book|course|guide|report)\b",
+            r"\bwhat (does|is) (this|the) (document|file|pdf|txt|book|course|guide|report) (have|contain|contains|about)\b",
+            r"\bwhat is in (this|the) (document|file|pdf|txt)\b",
+            r"\bwhat does this contain\b",
+            r"\bwhat does this document have\b",
+            r"\btell me about\b"
+        ]
+        return any(re.search(pat, q) for pat in patterns)
+
+    def _generate_structured_overview(self, query: str, retrieved_chunks: List[Dict[str, Any]]) -> str:
+        """Generates a rich, detailed, structured overview of the document based on retrieved context."""
+        if not retrieved_chunks:
+            return self.REFUSAL_MESSAGE
+
+        sources = set()
+        clean_lines = []
+        for chunk in retrieved_chunks:
+            meta = chunk.get("metadata", {})
+            src = meta.get("source", meta.get("filename", "Uploaded Document"))
+            if src:
+                sources.add(src)
+            text = chunk.get("text", "").strip()
+            for line in text.splitlines():
+                l_str = line.strip()
+                if len(l_str) > 15 and not l_str.startswith("Page") and not l_str.startswith("http"):
+                    clean_lines.append(l_str)
+
+        source_name = list(sources)[0] if sources else "Uploaded Document"
+
+        # Determine document type dynamically
+        full_text_sample = " ".join(clean_lines[:15]).lower()
+        if any(w in full_text_sample for w in ["chess", "tactics", "puzzle", "mate", "king", "queen", "bishop", "knight", "pawn", "defense"]):
+            doc_type = "Chess Tactics & Strategy Guide"
+        elif any(w in full_text_sample for w in ["travel", "tour", "tourist", "monument", "itinerary", "india"]):
+            doc_type = "Travel and Tourism Guide"
+        elif any(w in full_text_sample for w in ["curriculum vitae", "resume", "experience", "education"]):
+            doc_type = "Professional Resume / CV"
+        elif any(w in full_text_sample for w in ["financial", "report", "annual", "shares", "revenue"]):
+            doc_type = "Financial Analysis & Corporate Report"
+        else:
+            doc_type = "Informational Guide / Reference Manual"
+
+        # Extract 4-5 meaningful key highlights/bullet points
+        seen = set()
+        key_points = []
+        for line in clean_lines:
+            line_clean = re.sub(r"^\d+[\.\)]\s*", "", line).strip()
+            if len(line_clean) > 20 and line_clean.lower() not in seen and not any(line_clean.lower().startswith(x) for x in ["copyright", "page", "table of"]):
+                seen.add(line_clean.lower())
+                key_points.append(line_clean)
+                if len(key_points) >= 4:
+                    break
+
+        if key_points:
+            bullets = "\n".join([f"- {p}" for p in key_points])
+        else:
+            bullets = "- Detailed structured sections, core concepts, and key reference material."
+
+        return (
+            f"This document is titled **{source_name}** ({doc_type}).\n\n"
+            f"**Key Topics & Overview**:\n"
+            f"{bullets}\n\n"
+            f"You can ask specific questions about detailed sections, chapters, rules, guidelines, or figures mentioned in this document."
+        )
+
     def generate(
         self,
         query: str,
@@ -130,8 +200,21 @@ class RAGGenerator:
                 refusal=True
             )
 
-        context_str = self.format_context(retrieved_chunks)
         citations = self.extract_citations(retrieved_chunks)
+
+        # Detect overview questions and return detailed structured overview
+        if self._is_overview_query(query):
+            overview_text = self._generate_structured_overview(query, retrieved_chunks)
+            citation_block = CitationFormatter.format_citations_block(citations)
+            final_output = f"{overview_text}\n\nSources:\n{citation_block}" if citation_block else overview_text
+            return CitedAnswer(
+                answer=final_output,
+                citations=citations,
+                retrieved_chunks=retrieved_chunks,
+                refusal=False
+            )
+
+        context_str = self.format_context(retrieved_chunks)
 
         prompt = self.prompt_template.format(
             context=context_str,
@@ -269,6 +352,7 @@ class RAGGenerator:
         cleaned = re.sub(r"\[(?:Excerpt|excerpt|INST|Doc_Name|doc_name)[^\]]*\]", "", cleaned)
         cleaned = re.sub(r",?\s*Page\s*\d+\.?", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\[\]", "", cleaned)
+        cleaned = re.sub(r"<>\.?", "", cleaned)
 
         # Strip fine-tuning meta phrases and leading/trailing prompt artifacts
         meta_patterns = [
@@ -283,7 +367,10 @@ class RAGGenerator:
             r"The supporting record gives this detail explicitly\.?",
             r"The supporting document cites\.?",
             r"The supporting evidence is\.?",
+            r"The relevant passage states:\s*",
             r"The relevant text is\.?",
+            r"The citation is\s*<>?",
+            r"The citation is\.?",
             r"The context states that\s*",
             r"The excerpt states that\s*"
         ]

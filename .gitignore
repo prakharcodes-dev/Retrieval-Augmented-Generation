@@ -27,7 +27,7 @@ venv/
 ENV/
 
 # RAG App & Data Storage
-vectorstore/
+/vectorstore/
 .env
 
 # IDEs & System
