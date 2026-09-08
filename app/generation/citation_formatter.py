@@ -55,3 +55,22 @@ class CitationFormatter:
                 formatted_lines.append(f"[{idx}] {source}")
 
         return "\n".join(formatted_lines)
+
+    @classmethod
+    def format_citations_badges(cls, citations: List[Dict[str, Any]]) -> str:
+        """Formats extracted citations into clean styled HTML badge pills for modern UI rendering."""
+        if not citations:
+            return ""
+
+        badges = []
+        for cite in citations:
+            source = cite.get("source", "Document")
+            page = cite.get("page_number")
+            if page is not None and str(page).isdigit():
+                label = f"📄 {source} · Page {page}"
+            else:
+                label = f"📄 {source}"
+            badge_html = f'<span class="citation-pill">{label}</span>'
+            badges.append(badge_html)
+
+        return "".join(badges)

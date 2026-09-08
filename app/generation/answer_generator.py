@@ -127,28 +127,56 @@ class RAGGenerator:
         ]
         return any(re.search(pat, q) for pat in patterns)
 
+    def _extract_complete_sentences(self, chunks: List[Dict[str, Any]]) -> List[str]:
+        """Normalizes chunk text by joining broken PDF lines into complete sentences."""
+        full_text_blocks = []
+        for chunk in chunks:
+            text = chunk.get("text", "").strip()
+            if not text:
+                continue
+            # Replace single line breaks within paragraphs with spaces to repair mid-sentence PDF line wrapping
+            normalized = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+            normalized = re.sub(r"\s+", " ", normalized).strip()
+            full_text_blocks.append(normalized)
+
+        combined_text = " ".join(full_text_blocks)
+
+        # Split into sentences using sentence boundary punctuation followed by space and capital letter or end of string
+        raw_sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", combined_text)
+
+        clean_sentences = []
+        for s in raw_sentences:
+            s_clean = s.strip()
+            if (
+                len(s_clean) > 25
+                and len(s_clean.split()) >= 5
+                and not s_clean.startswith("http")
+                and not s_clean.startswith("[Excerpt")
+                and not s_clean.lower().startswith("table of")
+                and not s_clean.lower().startswith("page ")
+            ):
+                clean_sentences.append(s_clean)
+
+        return clean_sentences
+
     def _generate_structured_overview(self, query: str, retrieved_chunks: List[Dict[str, Any]]) -> str:
         """Generates a rich, detailed, structured overview of the document based on retrieved context."""
         if not retrieved_chunks:
             return self.REFUSAL_MESSAGE
 
         sources = set()
-        clean_lines = []
         for chunk in retrieved_chunks:
             meta = chunk.get("metadata", {})
             src = meta.get("source", meta.get("filename", "Uploaded Document"))
             if src:
                 sources.add(src)
-            text = chunk.get("text", "").strip()
-            for line in text.splitlines():
-                l_str = line.strip()
-                if len(l_str) > 15 and not l_str.startswith("Page") and not l_str.startswith("http"):
-                    clean_lines.append(l_str)
 
         source_name = list(sources)[0] if sources else "Uploaded Document"
+        clean_sentences = self._extract_complete_sentences(retrieved_chunks)
+
+        full_text_sample = " ".join(clean_sentences[:10]).lower() if clean_sentences else ""
 
         # Determine document type dynamically
-        full_text_sample = " ".join(clean_lines[:15]).lower()
         if any(w in full_text_sample for w in ["chess", "tactics", "puzzle", "mate", "king", "queen", "bishop", "knight", "pawn", "defense"]):
             doc_type = "Chess Tactics & Strategy Guide"
         elif any(w in full_text_sample for w in ["travel", "tour", "tourist", "monument", "itinerary", "india"]):
@@ -157,17 +185,20 @@ class RAGGenerator:
             doc_type = "Professional Resume / CV"
         elif any(w in full_text_sample for w in ["financial", "report", "annual", "shares", "revenue"]):
             doc_type = "Financial Analysis & Corporate Report"
+        elif any(w in full_text_sample for w in ["systematics", "classification", "species", "organism", "biology", "taxa", "genus", "nomenclature"]):
+            doc_type = "Biological Sciences & Taxonomy Textbook"
         else:
             doc_type = "Informational Guide / Reference Manual"
 
-        # Extract 4-5 meaningful key highlights/bullet points
+        # Extract 4-5 meaningful key highlights/bullet points using complete sentences
         seen = set()
         key_points = []
-        for line in clean_lines:
-            line_clean = re.sub(r"^\d+[\.\)]\s*", "", line).strip()
-            if len(line_clean) > 20 and line_clean.lower() not in seen and not any(line_clean.lower().startswith(x) for x in ["copyright", "page", "table of"]):
-                seen.add(line_clean.lower())
-                key_points.append(line_clean)
+        for s in clean_sentences:
+            s_clean = re.sub(r"^\d+[\.\)]\s*", "", s).strip()
+            s_lower = s_clean.lower()
+            if s_lower not in seen and not any(s_lower.startswith(x) for x in ["copyright", "page ", "table of", "all rights reserved"]):
+                seen.add(s_lower)
+                key_points.append(s_clean)
                 if len(key_points) >= 4:
                     break
 
