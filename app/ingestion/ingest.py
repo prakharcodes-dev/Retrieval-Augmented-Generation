@@ -14,24 +14,49 @@ def ingest_documents(
     vector_store: Optional["ChromaVectorStore"] = None,
     reset: bool = False
 ) -> Dict[str, Any]:
-    """
-    High-level Ingestion Pipeline:
-    Upload/Path -> Document Loading (.pdf, .txt) -> Text Extraction -> Text Cleaning -> Token Chunking -> ChromaDB Vector Store
-    """
     target = Path(path)
     if not target.exists():
         raise FileNotFoundError(f"Ingestion path does not exist: {target}")
+
+    from app.vectorstore.chroma_store import ChromaVectorStore
+    store = vector_store or ChromaVectorStore()
+    if reset:
+        store.reset()
+
+    existing_hashes = store.get_existing_hashes() if not reset else set()
 
     loader = DocumentLoader()
     cleaner = TextCleaner()
 
     if target.is_file():
+        file_hash = loader.compute_file_hash(target)
+        if file_hash in existing_hashes:
+            return {
+                "status": "skipped",
+                "message": f"File '{target.name}' already processed. Reusing existing vector store.",
+                "files_processed": 0,
+                "pages_processed": 0,
+                "chunks_stored": 0,
+                "total_chunks_in_db": store.get_count()
+            }
         pages = loader.load_file(target)
         file_count = 1
     elif target.is_dir():
-        pages = loader.load_directory(target)
         files = [p for p in target.glob("**/*") if p.suffix.lower() in (".pdf", ".txt", ".md", ".text")]
-        file_count = len(files)
+        new_files = [f for f in files if loader.compute_file_hash(f) not in existing_hashes]
+        if not new_files:
+            return {
+                "status": "skipped",
+                "message": "All documents in directory already processed. Reusing existing vector store.",
+                "files_processed": 0,
+                "pages_processed": 0,
+                "chunks_stored": 0,
+                "total_chunks_in_db": store.get_count()
+            }
+        pages = []
+        for f in new_files:
+            pages.extend(loader.load_file(f))
+        file_count = len(new_files)
     else:
         raise ValueError(f"Invalid path type for ingestion: {target}")
 
@@ -42,24 +67,22 @@ def ingest_documents(
             "files_processed": file_count,
             "pages_processed": 0,
             "chunks_stored": 0,
-            "total_chunks_in_db": 0
+            "total_chunks_in_db": store.get_count()
         }
 
-    # Clean text for each page prior to chunking
     for page in pages:
         page.text = cleaner.clean(page.text)
 
-    # Filter out empty pages after cleaning
     valid_pages = [p for p in pages if p.text and p.text.strip()]
 
     if not valid_pages:
         return {
             "status": "warning",
-            "message": "No extractable text was found in the document. The document might be a scanned image, image-only PDF, or empty file.",
+            "message": "No extractable text was found in the document.",
             "files_processed": file_count,
             "pages_processed": len(pages),
             "chunks_stored": 0,
-            "total_chunks_in_db": vector_store.get_count() if vector_store else 0
+            "total_chunks_in_db": store.get_count()
         }
 
     chunker = TextChunker(
@@ -68,12 +91,6 @@ def ingest_documents(
     )
 
     chunks = chunker.chunk_documents(valid_pages)
-
-    from app.vectorstore.chroma_store import ChromaVectorStore
-    store = vector_store or ChromaVectorStore()
-    if reset:
-        store.reset()
-
     added_count = store.add_chunks(chunks)
 
     return {
@@ -83,3 +100,4 @@ def ingest_documents(
         "chunks_stored": added_count,
         "total_chunks_in_db": store.get_count()
     }
+

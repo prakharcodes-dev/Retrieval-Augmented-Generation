@@ -169,11 +169,11 @@ with st.sidebar:
                     saved_paths.append(file_path)
 
                 st.write("⚡ Extracting text, cleaning formatting & token chunking...")
-                result = ingest_documents(path=data_dir, vector_store=vector_store, reset=True)
+                result = ingest_documents(path=data_dir, vector_store=vector_store, reset=False)
 
-                if result.get("status") == "warning":
-                    status.update(label="⚠️ Ingestion Warning", state="error", expanded=True)
-                    st.warning(result.get("message"))
+                if result.get("status") in ("warning", "skipped"):
+                    status.update(label=f"ℹ️ {result.get('message')}", state="complete", expanded=False)
+                    st.info(result.get("message"))
                 else:
                     status.update(label="✅ Ingestion Complete!", state="complete", expanded=False)
                     st.session_state.messages = []

@@ -156,14 +156,24 @@ class TextChunker:
                 chunk_index = start_index + len(chunks)
                 chunk_id = f"{doc_id}{page_suffix}_chunk_{chunk_index:03d}"
 
+                section_title = metadata.get("section", "")
+                if not section_title:
+                    for line in chunk_text.splitlines():
+                        line_s = line.strip()
+                        if line_s.startswith("#") or line_s.lower().startswith("section") or line_s.lower().startswith("chapter"):
+                            section_title = line_s.lstrip("#").strip()
+                            break
+
                 chunk_meta = dict(metadata)
                 chunk_meta["chunk_id"] = chunk_id
                 chunk_meta["chunk_index"] = chunk_index
                 chunk_meta["document_id"] = metadata.get("document_id", doc_id)
                 chunk_meta["filename"] = metadata.get("filename", metadata.get("source", ""))
                 chunk_meta["file_type"] = metadata.get("file_type", "pdf")
+                chunk_meta["file_hash"] = metadata.get("file_hash", "")
                 chunk_meta["source"] = metadata.get("source", "")
                 chunk_meta["title"] = metadata.get("title", "")
+                chunk_meta["section"] = section_title
                 chunk_meta["page_number"] = metadata.get("page_number", metadata.get("page"))
 
                 chunks.append(

@@ -43,46 +43,27 @@ class VectorRetriever(BaseRetriever):
         }
         words = [w.lower().strip("?,.!") for w in query.split() if w.lower().strip("?,.!") not in stopwords and len(w) > 2]
 
-        # 3. Check for exact keyword hits across collection to prevent missing metadata / title chunks
-        collection = getattr(self.vector_store, "collection", None)
-        if collection and words:
+        if words:
             try:
-                all_docs = collection.get(include=["documents", "metadatas"])
-                all_d = all_docs.get("documents", [])
-                all_m = all_docs.get("metadatas", [])
-                all_i = all_docs.get("ids", [])
-
-                vector_ranks = {item["chunk_id"]: idx for idx, item in enumerate(vector_results)}
-
                 scored_items = []
-                for cid, doc, meta in zip(all_i, all_d, all_m):
+                for v_rank, item in enumerate(vector_results):
+                    doc = item.get("text", "")
+                    meta = item.get("metadata", {})
                     doc_lower = doc.lower()
                     kw_hits = sum(1 for w in words if w in doc_lower)
 
-                    v_rank = vector_ranks.get(cid, 999)
-                    v_score = 1.0 / (60 + v_rank) if v_rank < 999 else 0.0
-
-                    # Hybrid combined score
+                    v_score = 1.0 / (60 + v_rank)
                     combined_score = (0.6 * v_score) + (0.4 * (kw_hits / max(len(words), 1)))
 
-                    if v_rank < 999 or kw_hits >= 2 or (kw_hits >= 1 and any(w in ("company", "published", "publisher", "skyway") for w in words)):
-                        page = meta.get("page_number", meta.get("page"))
-                        source = meta.get("source", meta.get("filename", ""))
-                        scored_items.append({
-                            "chunk_id": cid,
-                            "text": doc,
-                            "metadata": meta,
-                            "document_id": meta.get("document_id", ""),
-                            "source": source,
-                            "page_number": page,
-                            "hybrid_score": combined_score
-                        })
+                    item_copy = dict(item)
+                    item_copy["hybrid_score"] = combined_score
+                    scored_items.append(item_copy)
 
                 if scored_items:
                     scored_items.sort(key=lambda x: x["hybrid_score"], reverse=True)
                     return scored_items[:k]
-            except Exception as e:
-                print(f"Notice: Hybrid keyword scoring fallback ({e}). Using vector search.")
+            except Exception:
+                pass
 
         return vector_results[:k]
 

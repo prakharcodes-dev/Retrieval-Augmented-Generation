@@ -25,5 +25,13 @@ class BaseVectorStore(ABC):
 
     @abstractmethod
     def reset(self) -> None:
-        """Clears/resets the vector store collection."""
         pass
+
+    @abstractmethod
+    def get_existing_hashes(self) -> set:
+        pass
+
+    @abstractmethod
+    def has_file_hash(self, file_hash: str) -> bool:
+        pass
+

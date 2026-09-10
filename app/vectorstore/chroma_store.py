@@ -126,3 +126,22 @@ class ChromaVectorStore(BaseVectorStore):
             embedding_function=self.embedding_service,
             metadata={"hnsw:space": "cosine"}
         )
+
+    def get_existing_hashes(self) -> set:
+        try:
+            data = self.collection.get(include=["metadatas"])
+            if not data or not data.get("metadatas"):
+                return set()
+            return {
+                m.get("file_hash")
+                for m in data["metadatas"]
+                if m and m.get("file_hash")
+            }
+        except Exception:
+            return set()
+
+    def has_file_hash(self, file_hash: str) -> bool:
+        if not file_hash:
+            return False
+        return file_hash in self.get_existing_hashes()
+

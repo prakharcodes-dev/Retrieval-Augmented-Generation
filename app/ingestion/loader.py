@@ -35,17 +35,44 @@ class DocumentLoader:
         else:
             raise ValueError(f"Unsupported file type '{ext}'. Supported formats: .pdf, .txt, .md")
 
+    def compute_file_hash(self, path: Path) -> str:
+        with open(str(path), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
     def _generate_doc_id(self, path: Path) -> str:
-        """Generates a deterministic document ID based on filename and size."""
-        raw_key = f"{path.name}_{path.stat().st_size}"
-        return f"doc_{hashlib.sha256(raw_key.encode('utf-8')).hexdigest()[:12]}"
+        file_hash = self.compute_file_hash(path)
+        return f"doc_{file_hash[:12]}"
 
     def _load_pdf(self, path: Path) -> List[DocumentPage]:
         pages: List[DocumentPage] = []
-        doc_id = self._generate_doc_id(path)
+        file_hash = self.compute_file_hash(path)
+        doc_id = f"doc_{file_hash[:12]}"
         doc_name = path.name
         timestamp = datetime.now(timezone.utc).isoformat()
         title = path.stem.replace("_", " ").replace("-", " ").title()
+
+        try:
+            import pymupdf
+            doc = pymupdf.open(str(path))
+            for i, page in enumerate(doc):
+                page_text = page.get_text() or ""
+                metadata = {
+                    "document_id": doc_id,
+                    "filename": doc_name,
+                    "file_type": "pdf",
+                    "file_hash": file_hash,
+                    "source": doc_name,
+                    "title": title,
+                    "page_number": i + 1,
+                    "page": i + 1,
+                    "ingestion_timestamp": timestamp,
+                    "file_path": str(path.resolve())
+                }
+                pages.append(DocumentPage(text=page_text, metadata=metadata))
+            doc.close()
+            return pages
+        except Exception:
+            pass
 
         try:
             with open(str(path), "rb") as f:
@@ -67,10 +94,11 @@ class DocumentLoader:
                         "document_id": doc_id,
                         "filename": doc_name,
                         "file_type": "pdf",
+                        "file_hash": file_hash,
                         "source": doc_name,
                         "title": title,
-                        "page_number": i + 1,  # 1-indexed page numbering
-                        "page": i + 1,        # Backwards compatibility alias
+                        "page_number": i + 1,
+                        "page": i + 1,
                         "ingestion_timestamp": timestamp,
                         "file_path": str(path.resolve())
                     }
@@ -82,8 +110,10 @@ class DocumentLoader:
 
         return pages
 
+
     def _load_txt(self, path: Path) -> List[DocumentPage]:
-        doc_id = self._generate_doc_id(path)
+        file_hash = self.compute_file_hash(path)
+        doc_id = f"doc_{file_hash[:12]}"
         doc_name = path.name
         timestamp = datetime.now(timezone.utc).isoformat()
         title = path.stem.replace("_", " ").replace("-", " ").title()
@@ -97,6 +127,7 @@ class DocumentLoader:
             "document_id": doc_id,
             "filename": doc_name,
             "file_type": "txt",
+            "file_hash": file_hash,
             "source": doc_name,
             "title": title,
             "page_number": None,
@@ -106,6 +137,7 @@ class DocumentLoader:
         }
 
         return [DocumentPage(text=content, metadata=metadata)]
+
 
     def load_directory(self, dir_path: str | Path) -> List[DocumentPage]:
         """Loads all supported PDF and TXT files in a directory recursively."""
