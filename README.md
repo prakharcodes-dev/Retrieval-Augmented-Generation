@@ -1,3 +1,16 @@
+---
+title: Rag Document Assistant
+emoji: 🚀
+colorFrom: pink
+colorTo: indigo
+sdk: gradio
+sdk_version: 4.44.0
+app_file: main.py
+pinned: false
+license: mit
+short_description: AI-powered RAG Document Assistant with PDF upload, structure-aware chunking, hybrid retrieval, and grounded citations.
+---
+
 # Ask My Docs — Phase 1 RAG Fundamentals
 
 **Ask My Docs** is a domain-specific Retrieval-Augmented Generation (RAG) assistant designed to ingest PDF and TXT documents, store token-bounded text chunks in ChromaDB, perform semantic vector search, and generate grounded answers with verifiable source citations.

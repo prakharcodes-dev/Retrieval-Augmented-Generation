@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     LLM_API_KEY: str = ""
     EMBEDDING_API_KEY: str = ""
+    HF_TOKEN: str = ""
 
     # Provider Options
     LLM_PROVIDER: str = "qwen_lora"
@@ -36,14 +37,17 @@ class Settings(BaseSettings):
 
     LOCAL_MODEL_PATH: str = r"D:\Training\trained_model"
     BASE_MODEL_NAME: str = "Qwen/Qwen2.5-3B-Instruct"
+    CPU_FALLBACK_MODEL: str = "Qwen/Qwen2.5-0.5B-Instruct"
 
     EMBEDDING_PROVIDER: str = "openai"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
 
-    # Chunking & Retrieval Parameters
+    # Chunking & Retrieval & Validation Parameters
     CHUNK_SIZE: int = 700
     CHUNK_OVERLAP: int = 100
     TOP_K: int = 5
+    MAX_FILE_SIZE_MB: int = 25
+    MAX_PDF_PAGES: int = 150
 
     # Vectorstore & Paths
     VECTOR_STORE_PROVIDER: str = "chroma"

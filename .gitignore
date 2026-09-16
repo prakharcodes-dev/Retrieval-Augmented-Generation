@@ -28,6 +28,7 @@ ENV/
 
 # RAG App & Data Storage
 /vectorstore/
+/data/uploads/
 .env
 
 # IDEs & System

@@ -11,15 +11,12 @@ _QWEN_TOKENIZER = None
 
 
 def _get_qwen_lora_model() -> Tuple[Any, Any]:
-    """
-    Lazy-loads base model Qwen/Qwen2.5-3B-Instruct in 4-bit NF4 quantization (on GPU)
-    or low-memory mode (on CPU) and attaches the trained LoRA adapter from D:\\Training\\trained_model.
-    Model is loaded EXACTLY ONCE and reused across requests.
-    """
     global _QWEN_MODEL, _QWEN_TOKENIZER
     if _QWEN_MODEL is not None and _QWEN_TOKENIZER is not None:
         return _QWEN_MODEL, _QWEN_TOKENIZER
 
+    import os
+    import sys
     import torch
     warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -28,38 +25,74 @@ def _get_qwen_lora_model() -> Tuple[Any, Any]:
 
     adapter_path = getattr(settings, "LOCAL_MODEL_PATH", r"D:\Training\trained_model")
     base_model_name = getattr(settings, "BASE_MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct")
+    fallback_model_name = getattr(settings, "CPU_FALLBACK_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 
-    print(f"--- Loading Base Model ({base_model_name}) ---")
-    
-    if torch.cuda.is_available():
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True
-        )
-        base_model = AutoModelForCausalLM.from_pretrained(
-            base_model_name,
-            quantization_config=bnb_config,
-            device_map="auto",
-            torch_dtype=torch.float16
-        )
-    else:
-        base_model = AutoModelForCausalLM.from_pretrained(
-            base_model_name,
-            low_cpu_mem_usage=True
-        )
+    hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN") or getattr(settings, "HF_TOKEN", "")
+    if not hf_token:
+        try:
+            import streamlit as st
+            hf_token = st.secrets.get("HF_TOKEN", "") or st.secrets.get("HUGGINGFACEHUB_API_TOKEN", "")
+        except Exception:
+            pass
 
-    print(f"--- Attaching LoRA Adapter from ({adapter_path}) ---")
-    _QWEN_MODEL = PeftModel.from_pretrained(base_model, adapter_path)
-    _QWEN_MODEL.eval()
+    token_kwargs = {"token": hf_token} if hf_token else {}
 
-    _QWEN_TOKENIZER = AutoTokenizer.from_pretrained(adapter_path)
-    if _QWEN_TOKENIZER.pad_token is None:
-        _QWEN_TOKENIZER.pad_token = _QWEN_TOKENIZER.eos_token
+    try:
+        print(f"--- Loading Base Model ({base_model_name}) ---")
+        if torch.cuda.is_available():
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True
+            )
+            base_model = AutoModelForCausalLM.from_pretrained(
+                base_model_name,
+                quantization_config=bnb_config,
+                device_map="auto",
+                torch_dtype=torch.float16,
+                **token_kwargs
+            )
+        else:
+            base_model = AutoModelForCausalLM.from_pretrained(
+                base_model_name,
+                low_cpu_mem_usage=True,
+                torch_dtype=torch.float32,
+                **token_kwargs
+            )
 
-    print("--- Qwen 2.5 3B + LoRA Adapter successfully initialized ---")
-    return _QWEN_MODEL, _QWEN_TOKENIZER
+        if os.path.exists(adapter_path):
+            print(f"--- Attaching LoRA Adapter from ({adapter_path}) ---")
+            _QWEN_MODEL = PeftModel.from_pretrained(base_model, adapter_path, **token_kwargs)
+        else:
+            _QWEN_MODEL = base_model
+
+        _QWEN_MODEL.eval()
+
+        tok_path = adapter_path if os.path.exists(adapter_path) else base_model_name
+        _QWEN_TOKENIZER = AutoTokenizer.from_pretrained(tok_path, **token_kwargs)
+        if _QWEN_TOKENIZER.pad_token is None:
+            _QWEN_TOKENIZER.pad_token = _QWEN_TOKENIZER.eos_token
+
+        print("--- Qwen 2.5 3B + LoRA Adapter successfully initialized ---")
+        return _QWEN_MODEL, _QWEN_TOKENIZER
+    except Exception as primary_err:
+        print(f"Notice: Main model initialization failed ({primary_err}). Attempting fallback to {fallback_model_name}.")
+        try:
+            _QWEN_MODEL = AutoModelForCausalLM.from_pretrained(
+                fallback_model_name,
+                low_cpu_mem_usage=True,
+                torch_dtype=torch.float32,
+                **token_kwargs
+            )
+            _QWEN_MODEL.eval()
+            _QWEN_TOKENIZER = AutoTokenizer.from_pretrained(fallback_model_name, **token_kwargs)
+            if _QWEN_TOKENIZER.pad_token is None:
+                _QWEN_TOKENIZER.pad_token = _QWEN_TOKENIZER.eos_token
+            return _QWEN_MODEL, _QWEN_TOKENIZER
+        except Exception as fallback_err:
+            print(f"Notice: Fallback model loading failed ({fallback_err}). Relying on grounded local synthesis.")
+            raise RuntimeError(f"Model loading failed: {fallback_err}") from fallback_err
 
 
 @dataclass

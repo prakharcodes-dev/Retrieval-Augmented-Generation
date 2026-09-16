@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from pypdf import PdfReader
+from app.config.settings import settings
 
 
 @dataclass
@@ -25,6 +26,10 @@ class DocumentLoader:
 
         if not path.is_file():
             raise ValueError(f"Path is not a valid file: {path}")
+
+        max_mb = getattr(settings, "MAX_FILE_SIZE_MB", 25)
+        if path.stat().st_size > max_mb * 1024 * 1024:
+            raise ValueError(f"File '{path.name}' exceeds maximum allowed size of {max_mb} MB.")
 
         ext = path.suffix.lower()
 
@@ -50,10 +55,17 @@ class DocumentLoader:
         doc_name = path.name
         timestamp = datetime.now(timezone.utc).isoformat()
         title = path.stem.replace("_", " ").replace("-", " ").title()
+        max_pages = getattr(settings, "MAX_PDF_PAGES", 150)
 
         try:
             import pymupdf
             doc = pymupdf.open(str(path))
+            if getattr(doc, "is_encrypted", False):
+                doc.close()
+                raise ValueError(f"PDF file '{doc_name}' is password-protected and cannot be read.")
+            if len(doc) > max_pages:
+                doc.close()
+                raise ValueError(f"PDF file '{doc_name}' exceeds maximum limit of {max_pages} pages (has {len(doc)} pages).")
             for i, page in enumerate(doc):
                 page_text = page.get_text() or ""
                 metadata = {
@@ -71,6 +83,8 @@ class DocumentLoader:
                 pages.append(DocumentPage(text=page_text, metadata=metadata))
             doc.close()
             return pages
+        except ValueError:
+            raise
         except Exception:
             pass
 
@@ -82,6 +96,9 @@ class DocumentLoader:
                         reader.decrypt("")
                     except Exception:
                         raise ValueError(f"PDF file '{doc_name}' is password-protected and cannot be read.")
+
+                if len(reader.pages) > max_pages:
+                    raise ValueError(f"PDF file '{doc_name}' exceeds maximum limit of {max_pages} pages (has {len(reader.pages)} pages).")
 
                 for i, page in enumerate(reader.pages):
                     try:
@@ -103,6 +120,8 @@ class DocumentLoader:
                         "file_path": str(path.resolve())
                     }
                     pages.append(DocumentPage(text=page_text, metadata=metadata))
+        except ValueError:
+            raise
         except Exception as e:
             if "encrypted" in str(e).lower() or "password" in str(e).lower():
                 raise ValueError(f"PDF file '{doc_name}' is password-protected.") from e

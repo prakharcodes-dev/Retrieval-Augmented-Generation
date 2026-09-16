@@ -1,7 +1,6 @@
 import uuid
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
-import tiktoken
 from app.config.settings import settings
 from app.ingestion.loader import DocumentPage
 
@@ -69,6 +68,7 @@ class TextChunker:
         ]
 
         try:
+            import tiktoken
             self.tokenizer = tiktoken.get_encoding(encoding_name)
         except Exception:
             self.tokenizer = None
