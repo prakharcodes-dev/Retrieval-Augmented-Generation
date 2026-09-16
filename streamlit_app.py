@@ -45,8 +45,8 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration & Status")
 
-        doc_count = vector_store.get_document_count()
-        chunk_count = vector_store.get_chunk_count()
+        chunk_count = vector_store.get_count()
+        doc_count = len(vector_store.get_existing_hashes())
 
         col1, col2 = st.columns(2)
         col1.metric("Documents", doc_count)
