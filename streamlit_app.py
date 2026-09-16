@@ -7,7 +7,7 @@ import streamlit as st
 from app.config.settings import settings
 from app.vectorstore.chroma_store import ChromaVectorStore
 from app.embeddings.embedding_service import EmbeddingService
-from app.retrieval.hybrid_retriever import HybridRetriever
+from app.retrieval.vector_retriever import VectorRetriever
 from app.generation.answer_generator import RAGGenerator
 from app.ingestion.loader import DocumentLoader
 from app.ingestion.ingest import ingest_documents
@@ -40,7 +40,7 @@ def main():
     st.caption("Production-Ready Retrieval-Augmented Generation System")
 
     vector_store = get_vector_store()
-    retriever = HybridRetriever(vector_store=vector_store, top_k=settings.TOP_K)
+    retriever = VectorRetriever(vector_store=vector_store)
 
     with st.sidebar:
         st.header("⚙️ Configuration & Status")
@@ -94,7 +94,6 @@ def main():
 
         st.subheader("🔍 Retrieval Settings")
         top_k = st.slider("Top-K Retrieved Chunks", min_value=1, max_value=10, value=settings.TOP_K)
-        retriever.top_k = top_k
 
         debug_mode = st.toggle("Developer Debug Mode", value=False)
 
@@ -152,7 +151,7 @@ def main():
             else:
                 with st.spinner("Searching documents & generating answer..."):
                     try:
-                        retrieved = retriever.retrieve(prompt)
+                        retrieved = retriever.retrieve(prompt, top_k=top_k)
                         generator = get_generator()
                         result = generator.generate(prompt, retrieved)
 
