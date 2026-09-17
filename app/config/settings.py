@@ -76,7 +76,11 @@ class Settings(BaseSettings):
             self.LLM_MODEL = yaml_cfg["llm"].get("model", self.LLM_MODEL)
             self.LLM_TEMPERATURE = yaml_cfg["llm"].get("temperature", self.LLM_TEMPERATURE)
             if "adapter_path" in yaml_cfg["llm"]:
-                self.LOCAL_MODEL_PATH = yaml_cfg["llm"]["adapter_path"]
+                adapter_p = yaml_cfg["llm"]["adapter_path"]
+                if adapter_p and os.path.exists(adapter_p):
+                    self.LOCAL_MODEL_PATH = adapter_p
+                else:
+                    self.LOCAL_MODEL_PATH = ""
             if "base_model" in yaml_cfg["llm"]:
                 self.BASE_MODEL_NAME = yaml_cfg["llm"]["base_model"]
 

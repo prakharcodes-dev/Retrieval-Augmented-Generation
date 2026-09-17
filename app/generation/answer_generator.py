@@ -23,7 +23,8 @@ def _get_qwen_lora_model() -> Tuple[Any, Any]:
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     from peft import PeftModel
 
-    adapter_path = getattr(settings, "LOCAL_MODEL_PATH", r"D:\Training\trained_model")
+    raw_adapter = getattr(settings, "LOCAL_MODEL_PATH", "")
+    adapter_path = raw_adapter if raw_adapter and os.path.exists(raw_adapter) else ""
     base_model_name = getattr(settings, "BASE_MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct")
     fallback_model_name = getattr(settings, "CPU_FALLBACK_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 
@@ -37,9 +38,9 @@ def _get_qwen_lora_model() -> Tuple[Any, Any]:
 
     token_kwargs = {"token": hf_token} if hf_token else {}
 
-    try:
-        print(f"--- Loading Base Model ({base_model_name}) ---")
-        if torch.cuda.is_available():
+    if torch.cuda.is_available():
+        try:
+            print(f"--- Loading GPU Model ({base_model_name}) ---")
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
@@ -53,46 +54,43 @@ def _get_qwen_lora_model() -> Tuple[Any, Any]:
                 torch_dtype=torch.float16,
                 **token_kwargs
             )
-        else:
-            base_model = AutoModelForCausalLM.from_pretrained(
-                base_model_name,
-                low_cpu_mem_usage=True,
-                torch_dtype=torch.float32,
-                **token_kwargs
-            )
 
-        if os.path.exists(adapter_path):
-            print(f"--- Attaching LoRA Adapter from ({adapter_path}) ---")
-            _QWEN_MODEL = PeftModel.from_pretrained(base_model, adapter_path, **token_kwargs)
-        else:
-            _QWEN_MODEL = base_model
+            if adapter_path:
+                print(f"--- Attaching LoRA Adapter from ({adapter_path}) ---")
+                _QWEN_MODEL = PeftModel.from_pretrained(base_model, adapter_path, **token_kwargs)
+                tok_path = adapter_path
+            else:
+                _QWEN_MODEL = base_model
+                tok_path = base_model_name
 
+            _QWEN_MODEL.eval()
+            _QWEN_TOKENIZER = AutoTokenizer.from_pretrained(tok_path, **token_kwargs)
+            if _QWEN_TOKENIZER.pad_token is None:
+                _QWEN_TOKENIZER.pad_token = _QWEN_TOKENIZER.eos_token
+
+            print("--- GPU Qwen Model initialized successfully ---")
+            return _QWEN_MODEL, _QWEN_TOKENIZER
+        except Exception as gpu_err:
+            print(f"Notice: GPU model loading failed ({gpu_err}). Attempting CPU fallback model.")
+
+    print(f"--- Loading CPU Lightweight Model ({fallback_model_name}) ---")
+    try:
+        _QWEN_MODEL = AutoModelForCausalLM.from_pretrained(
+            fallback_model_name,
+            low_cpu_mem_usage=True,
+            torch_dtype=torch.float32,
+            **token_kwargs
+        )
         _QWEN_MODEL.eval()
-
-        tok_path = adapter_path if os.path.exists(adapter_path) else base_model_name
-        _QWEN_TOKENIZER = AutoTokenizer.from_pretrained(tok_path, **token_kwargs)
+        _QWEN_TOKENIZER = AutoTokenizer.from_pretrained(fallback_model_name, **token_kwargs)
         if _QWEN_TOKENIZER.pad_token is None:
             _QWEN_TOKENIZER.pad_token = _QWEN_TOKENIZER.eos_token
 
-        print("--- Qwen 2.5 3B + LoRA Adapter successfully initialized ---")
+        print(f"--- CPU Model ({fallback_model_name}) initialized successfully ---")
         return _QWEN_MODEL, _QWEN_TOKENIZER
-    except Exception as primary_err:
-        print(f"Notice: Main model initialization failed ({primary_err}). Attempting fallback to {fallback_model_name}.")
-        try:
-            _QWEN_MODEL = AutoModelForCausalLM.from_pretrained(
-                fallback_model_name,
-                low_cpu_mem_usage=True,
-                torch_dtype=torch.float32,
-                **token_kwargs
-            )
-            _QWEN_MODEL.eval()
-            _QWEN_TOKENIZER = AutoTokenizer.from_pretrained(fallback_model_name, **token_kwargs)
-            if _QWEN_TOKENIZER.pad_token is None:
-                _QWEN_TOKENIZER.pad_token = _QWEN_TOKENIZER.eos_token
-            return _QWEN_MODEL, _QWEN_TOKENIZER
-        except Exception as fallback_err:
-            print(f"Notice: Fallback model loading failed ({fallback_err}). Relying on grounded local synthesis.")
-            raise RuntimeError(f"Model loading failed: {fallback_err}") from fallback_err
+    except Exception as cpu_err:
+        print(f"Notice: CPU model loading failed ({cpu_err}). Relying on grounded local synthesis.")
+        raise RuntimeError(f"Model initialization failed: {cpu_err}") from cpu_err
 
 
 @dataclass
