@@ -1,7 +1,14 @@
+"""
+Token-bounded text chunker with hierarchical context boundary preservation,
+deterministic sequential chunk indexing across batches, and metadata validation.
+"""
+
 import uuid
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
+
 from app.config.settings import settings
+from app.core.exceptions import ChunkingError
 from app.ingestion.loader import DocumentPage
 
 
@@ -28,22 +35,22 @@ def validate_chunks(chunks: List[Chunk]) -> bool:
     seen_ids = set()
     for idx, chunk in enumerate(chunks):
         if not chunk.text or not chunk.text.strip():
-            raise ValueError(f"Chunk at index {idx} has empty text.")
+            raise ChunkingError(f"Chunk at index {idx} has empty text.")
 
         if not chunk.chunk_id:
-            raise ValueError(f"Chunk at index {idx} is missing chunk_id.")
+            raise ChunkingError(f"Chunk at index {idx} is missing chunk_id.")
 
         if chunk.chunk_id in seen_ids:
-            raise ValueError(f"Duplicate chunk_id detected: {chunk.chunk_id}")
+            raise ChunkingError(f"Duplicate chunk_id detected: {chunk.chunk_id}")
 
         seen_ids.add(chunk.chunk_id)
 
         meta = chunk.metadata
         if not meta:
-            raise ValueError(f"Chunk {chunk.chunk_id} is missing metadata dictionary.")
+            raise ChunkingError(f"Chunk {chunk.chunk_id} is missing metadata dictionary.")
 
         if "chunk_index" not in meta:
-            raise ValueError(f"Chunk {chunk.chunk_id} is missing 'chunk_index' in metadata.")
+            raise ChunkingError(f"Chunk {chunk.chunk_id} is missing 'chunk_index' in metadata.")
 
     return True
 
@@ -52,6 +59,7 @@ class TextChunker:
     """
     Splits document text into token-bounded chunks (target: 700 tokens, 100 overlap).
     Preserves document hierarchy (headings -> sections -> paragraphs -> sentences).
+    Ensures deterministic, sequential chunk IDs across streaming batches.
     """
 
     def __init__(
@@ -118,7 +126,7 @@ class TextChunker:
     def split_text(self, text: str, metadata: Dict[str, Any], start_index: int = 0) -> List[Chunk]:
         """
         Splits text into token-bounded chunks (target: 700 tokens, 100 overlap).
-        Attaches chunk_id, chunk_index, document_id, and source metadata.
+        Attaches chunk_id, chunk_index, document_id, and source metadata starting from start_index.
         """
         if not text or not text.strip():
             return []
@@ -130,7 +138,6 @@ class TextChunker:
         chunks: List[Chunk] = []
         doc_id = metadata.get("document_id", "doc")
         page_num = metadata.get("page_number", metadata.get("page", 1))
-        page_suffix = f"_p{page_num}" if page_num is not None else ""
 
         current_unit_idx = 0
         n_units = len(units)
@@ -154,7 +161,7 @@ class TextChunker:
             chunk_text = "".join(current_units).strip()
             if chunk_text:
                 chunk_index = start_index + len(chunks)
-                chunk_id = f"{doc_id}{page_suffix}_chunk_{chunk_index:03d}"
+                chunk_id = f"{doc_id}_chunk_{chunk_index:03d}"
 
                 section_title = metadata.get("section", "")
                 if not section_title:
@@ -205,11 +212,19 @@ class TextChunker:
 
         return chunks
 
-    def chunk_documents(self, pages: List[DocumentPage]) -> List[Chunk]:
-        """Processes a list of DocumentPages into Chunk objects with globally unique IDs and indexes."""
+    def chunk_documents(
+        self,
+        pages: List[DocumentPage],
+        start_indices: Optional[Dict[str, int]] = None
+    ) -> List[Chunk]:
+        """
+        Processes a list of DocumentPages into Chunk objects.
+        Maintains sequential chunk indices using start_indices dictionary across batches.
+        Updates start_indices dictionary in-place if provided.
+        Returns List[Chunk].
+        """
         all_chunks: List[Chunk] = []
-
-        doc_chunk_counters: Dict[str, int] = {}
+        doc_chunk_counters = start_indices if start_indices is not None else {}
 
         for page in pages:
             doc_id = page.metadata.get("document_id", "doc")

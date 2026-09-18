@@ -2,26 +2,38 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
 import re
 import warnings
+import threading
 from app.config.settings import settings
+from app.core.exceptions import GenerationError
+from app.core.resource_guard import ResourceGuard
 from app.generation.citation_formatter import CitationFormatter
 
 # Global singleton storage for lazy-loaded Qwen + LoRA model & tokenizer
 _QWEN_MODEL = None
 _QWEN_TOKENIZER = None
+_QWEN_LOCK = threading.Lock()
 
 
 def _get_qwen_lora_model() -> Tuple[Any, Any]:
-    global _QWEN_MODEL, _QWEN_TOKENIZER
+    global _QWEN_MODEL, _QWEN_TOKENIZER, _QWEN_LOCK
     if _QWEN_MODEL is not None and _QWEN_TOKENIZER is not None:
         return _QWEN_MODEL, _QWEN_TOKENIZER
 
-    import os
-    import sys
-    import torch
-    warnings.filterwarnings("ignore", category=UserWarning)
+    with _QWEN_LOCK:
+        if _QWEN_MODEL is not None and _QWEN_TOKENIZER is not None:
+            return _QWEN_MODEL, _QWEN_TOKENIZER
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-    from peft import PeftModel
+        import os
+        import sys
+        import torch
+        warnings.filterwarnings("ignore", category=UserWarning)
+
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+        from peft import PeftModel
+
+        # Pre-flight resource check
+        use_gpu, reason = ResourceGuard.check_llm_loading_workload(prefer_gpu=torch.cuda.is_available())
+        print(f"[ResourceGuard] LLM pre-flight check: {reason}")
 
     raw_adapter = getattr(settings, "LOCAL_MODEL_PATH", "")
     adapter_path = raw_adapter if raw_adapter and os.path.exists(raw_adapter) else ""

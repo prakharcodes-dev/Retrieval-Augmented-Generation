@@ -1,10 +1,21 @@
+"""
+Persistent ChromaDB Vector Store Implementation with RAM-optimized targeted queries,
+incremental batch persistence, and transaction failure isolation.
+"""
+
 import os
-from typing import List, Dict, Any, Optional
+import logging
+from typing import List, Dict, Any, Optional, Set
 import chromadb
+
 from app.config.settings import settings
+from app.core.exceptions import VectorStoreError
+from app.core.resource_guard import ResourceGuard
 from app.embeddings.embedding_service import EmbeddingService
 from app.ingestion.chunker import Chunk
 from app.vectorstore.base import BaseVectorStore
+
+logger = logging.getLogger(__name__)
 
 
 class ChromaVectorStore(BaseVectorStore):
@@ -21,23 +32,39 @@ class ChromaVectorStore(BaseVectorStore):
 
         os.makedirs(self.persist_directory, exist_ok=True)
 
-        self.client = chromadb.PersistentClient(path=self.persist_directory)
-        self.embedding_service = embedding_service or EmbeddingService()
+        try:
+            self.client = chromadb.PersistentClient(path=self.persist_directory)
+            self.embedding_service = embedding_service or EmbeddingService()
 
-        self.collection = self.client.get_or_create_collection(
-            name=self.collection_name,
-            embedding_function=self.embedding_service,
-            metadata={"hnsw:space": "cosine"}
-        )
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name,
+                embedding_function=self.embedding_service,
+                metadata={"hnsw:space": "cosine"}
+            )
+        except Exception as e:
+            raise VectorStoreError(f"Failed to initialize ChromaDB store: {e}") from e
 
     def add_chunks(self, chunks: List[Chunk], batch_size: int = 100) -> int:
-        """Stores chunks, text embeddings, and metadata in ChromaDB using efficient batching."""
+        """
+        Stores chunks, text embeddings, and metadata in ChromaDB using efficient incremental batching.
+        Isolates failures per batch to prevent corrupting existing vector data.
+        """
         if not chunks:
             return 0
 
+        # Memory check before batch insertion
+        ResourceGuard.check_memory(context="VectorStore batch insertion")
+
         total_added = 0
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i + batch_size]
+        safe_batch_size = ResourceGuard.calculate_safe_batch_size(
+            total_items=len(chunks),
+            default_batch_size=batch_size,
+            min_batch_size=10,
+            max_batch_size=200
+        )
+
+        for i in range(0, len(chunks), safe_batch_size):
+            batch = chunks[i:i + safe_batch_size]
             ids = [chunk.chunk_id for chunk in batch]
             documents = [chunk.text for chunk in batch]
 
@@ -53,12 +80,16 @@ class ChromaVectorStore(BaseVectorStore):
                         clean_meta[k] = str(v)
                 metadatas.append(clean_meta)
 
-            self.collection.upsert(
-                ids=ids,
-                documents=documents,
-                metadatas=metadatas
-            )
-            total_added += len(batch)
+            try:
+                self.collection.upsert(
+                    ids=ids,
+                    documents=documents,
+                    metadatas=metadatas
+                )
+                total_added += len(batch)
+            except Exception as e:
+                logger.error(f"Failed to upsert vector batch starting at index {i}: {e}")
+                raise VectorStoreError(f"Vector store batch write failed at index {i}: {e}") from e
 
         return total_added
 
@@ -75,11 +106,15 @@ class ChromaVectorStore(BaseVectorStore):
 
         k = min(k, total_docs)
 
-        results = self.collection.query(
-            query_texts=[query_text],
-            n_results=k,
-            include=["documents", "metadatas", "distances"]
-        )
+        try:
+            results = self.collection.query(
+                query_texts=[query_text],
+                n_results=k,
+                include=["documents", "metadatas", "distances"]
+            )
+        except Exception as e:
+            logger.error(f"ChromaDB query execution error: {e}")
+            raise VectorStoreError(f"Vector retrieval query failed: {e}") from e
 
         formatted_results: List[Dict[str, Any]] = []
 
@@ -105,7 +140,10 @@ class ChromaVectorStore(BaseVectorStore):
         return formatted_results
 
     def get_count(self) -> int:
-        return self.collection.count()
+        try:
+            return self.collection.count()
+        except Exception:
+            return 0
 
     def reset(self) -> None:
         """Completely clears and resets the ChromaDB vector store collection."""
@@ -127,7 +165,25 @@ class ChromaVectorStore(BaseVectorStore):
             metadata={"hnsw:space": "cosine"}
         )
 
-    def get_existing_hashes(self) -> set:
+    def has_file_hash(self, file_hash: str) -> bool:
+        """
+        Targeted RAM-friendly file hash verification using Chroma metadata filtering.
+        Does NOT dump the entire collection into memory.
+        """
+        if not file_hash:
+            return False
+        try:
+            res = self.collection.get(
+                where={"file_hash": file_hash},
+                limit=1,
+                include=[]
+            )
+            return bool(res and res.get("ids") and len(res["ids"]) > 0)
+        except Exception:
+            return file_hash in self.get_existing_hashes()
+
+    def get_existing_hashes(self) -> Set[str]:
+        """Fetches distinct document file hashes stored in the collection."""
         try:
             data = self.collection.get(include=["metadatas"])
             if not data or not data.get("metadatas"):
@@ -139,9 +195,3 @@ class ChromaVectorStore(BaseVectorStore):
             }
         except Exception:
             return set()
-
-    def has_file_hash(self, file_hash: str) -> bool:
-        if not file_hash:
-            return False
-        return file_hash in self.get_existing_hashes()
-
