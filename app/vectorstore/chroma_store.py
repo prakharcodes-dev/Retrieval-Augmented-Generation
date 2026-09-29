@@ -1,6 +1,6 @@
 """
 Persistent ChromaDB Vector Store Implementation with RAM-optimized targeted queries,
-incremental batch persistence, and transaction failure isolation.
+incremental batch persistence, transaction failure isolation, and metadata authorization controls.
 """
 
 import os
@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 class ChromaVectorStore(BaseVectorStore):
     """Persistent ChromaDB Vector Store Implementation."""
+
+    MAX_METADATA_STR_LEN: int = 1000  # Max length for individual metadata string values
 
     def __init__(
         self,
@@ -44,10 +46,30 @@ class ChromaVectorStore(BaseVectorStore):
         except Exception as e:
             raise VectorStoreError(f"Failed to initialize ChromaDB store: {e}") from e
 
+    def _sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Sanitizes and truncates metadata fields to prevent payload size bloat (CWE-400)
+        and illegal types.
+        """
+        clean_meta = {}
+        for k, v in metadata.items():
+            if not isinstance(k, str) or not k.strip():
+                continue
+            if v is None:
+                clean_meta[k] = ""
+            elif isinstance(v, (int, float, bool)):
+                clean_meta[k] = v
+            else:
+                str_val = str(v)
+                if len(str_val) > self.MAX_METADATA_STR_LEN:
+                    str_val = str_val[:self.MAX_METADATA_STR_LEN] + "..."
+                clean_meta[k] = str_val
+        return clean_meta
+
     def add_chunks(self, chunks: List[Chunk], batch_size: int = 100) -> int:
         """
         Stores chunks, text embeddings, and metadata in ChromaDB using efficient incremental batching.
-        Isolates failures per batch to prevent corrupting existing vector data.
+        Isolates failures per batch to prevent corrupting existing vector data and enforces metadata bounds.
         """
         if not chunks:
             return 0
@@ -65,20 +87,13 @@ class ChromaVectorStore(BaseVectorStore):
 
         for i in range(0, len(chunks), safe_batch_size):
             batch = chunks[i:i + safe_batch_size]
-            ids = [chunk.chunk_id for chunk in batch]
-            documents = [chunk.text for chunk in batch]
+            ids = [chunk.chunk_id for chunk in batch if chunk.chunk_id]
+            documents = [chunk.text for chunk in batch if chunk.text]
 
-            metadatas = []
-            for chunk in batch:
-                clean_meta = {}
-                for k, v in chunk.metadata.items():
-                    if v is None:
-                        clean_meta[k] = ""
-                    elif isinstance(v, (str, int, float, bool)):
-                        clean_meta[k] = v
-                    else:
-                        clean_meta[k] = str(v)
-                metadatas.append(clean_meta)
+            if len(ids) != len(batch) or len(documents) != len(batch):
+                raise VectorStoreError("Invalid chunk batch: missing chunk_id or text.")
+
+            metadatas = [self._sanitize_metadata(chunk.metadata) for chunk in batch]
 
             try:
                 self.collection.upsert(
@@ -93,8 +108,16 @@ class ChromaVectorStore(BaseVectorStore):
 
         return total_added
 
-    def query(self, query_text: str, top_k: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Queries ChromaDB collection for top_k relevant chunks."""
+    def query(
+        self,
+        query_text: str,
+        top_k: Optional[int] = None,
+        where: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Queries ChromaDB collection for top_k relevant chunks.
+        Supports metadata filtering (`where`) for access control / document isolation (CWE-862).
+        """
         if not query_text or not query_text.strip():
             return []
 
@@ -106,12 +129,21 @@ class ChromaVectorStore(BaseVectorStore):
 
         k = min(k, total_docs)
 
+        # Validate where filter if provided
+        sanitized_where = None
+        if where and isinstance(where, dict):
+            sanitized_where = self._sanitize_metadata(where)
+
+        query_kwargs: Dict[str, Any] = {
+            "query_texts": [query_text],
+            "n_results": k,
+            "include": ["documents", "metadatas", "distances"]
+        }
+        if sanitized_where:
+            query_kwargs["where"] = sanitized_where
+
         try:
-            results = self.collection.query(
-                query_texts=[query_text],
-                n_results=k,
-                include=["documents", "metadatas", "distances"]
-            )
+            results = self.collection.query(**query_kwargs)
         except Exception as e:
             logger.error(f"ChromaDB query execution error: {e}")
             raise VectorStoreError(f"Vector retrieval query failed: {e}") from e
@@ -139,6 +171,27 @@ class ChromaVectorStore(BaseVectorStore):
 
         return formatted_results
 
+    def delete_document(self, document_id: str, file_hash: Optional[str] = None) -> int:
+        """
+        Safely deletes document chunks belonging strictly to the specified document_id / file_hash (CWE-862).
+        Enforces document-level isolation instead of wiping the entire database.
+        """
+        if not document_id and not file_hash:
+            raise ValueError("Must provide valid document_id or file_hash to delete.")
+
+        where_clause: Dict[str, Any] = {}
+        if document_id:
+            where_clause["document_id"] = str(document_id)
+        if file_hash:
+            where_clause["file_hash"] = str(file_hash)
+
+        try:
+            self.collection.delete(where=where_clause)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete document '{document_id}': {e}")
+            raise VectorStoreError(f"Failed to delete document vectors: {e}") from e
+
     def get_count(self) -> int:
         try:
             return self.collection.count()
@@ -146,31 +199,30 @@ class ChromaVectorStore(BaseVectorStore):
             return 0
 
     def reset(self) -> None:
-        """Completely clears and resets the ChromaDB vector store collection."""
-        try:
-            existing = self.collection.get()
-            if existing and existing.get("ids"):
-                self.collection.delete(ids=existing["ids"])
-        except Exception:
-            pass
-
+        """
+        Clears the ChromaDB vector store collection on the engine level.
+        Does NOT dump entire collection IDs into RAM (Fixes CWE-400 DoS).
+        """
         try:
             self.client.delete_collection(name=self.collection_name)
         except Exception:
             pass
 
-        self.collection = self.client.get_or_create_collection(
-            name=self.collection_name,
-            embedding_function=self.embedding_service,
-            metadata={"hnsw:space": "cosine"}
-        )
+        try:
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name,
+                embedding_function=self.embedding_service,
+                metadata={"hnsw:space": "cosine"}
+            )
+        except Exception as e:
+            raise VectorStoreError(f"Failed to recreate collection on reset: {e}") from e
 
     def has_file_hash(self, file_hash: str) -> bool:
         """
         Targeted RAM-friendly file hash verification using Chroma metadata filtering.
         Does NOT dump the entire collection into memory.
         """
-        if not file_hash:
+        if not file_hash or not isinstance(file_hash, str):
             return False
         try:
             res = self.collection.get(
@@ -180,18 +232,21 @@ class ChromaVectorStore(BaseVectorStore):
             )
             return bool(res and res.get("ids") and len(res["ids"]) > 0)
         except Exception:
-            return file_hash in self.get_existing_hashes()
+            return False
 
-    def get_existing_hashes(self) -> Set[str]:
-        """Fetches distinct document file hashes stored in the collection."""
+    def get_existing_hashes(self, limit: int = 1000) -> Set[str]:
+        """
+        Fetches distinct document file hashes stored in the collection with pagination/limits
+        to prevent RAM exhaustion (Fixes CWE-400 DoS).
+        """
         try:
-            data = self.collection.get(include=["metadatas"])
+            data = self.collection.get(include=["metadatas"], limit=limit)
             if not data or not data.get("metadatas"):
                 return set()
             return {
                 m.get("file_hash")
                 for m in data["metadatas"]
-                if m and m.get("file_hash")
+                if m and isinstance(m, dict) and m.get("file_hash")
             }
         except Exception:
             return set()

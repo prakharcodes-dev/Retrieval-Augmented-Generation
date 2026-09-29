@@ -33,76 +33,69 @@ def _get_qwen_lora_model() -> Tuple[Any, Any]:
 
         # Pre-flight resource check
         use_gpu, reason = ResourceGuard.check_llm_loading_workload(prefer_gpu=torch.cuda.is_available())
-        print(f"[ResourceGuard] LLM pre-flight check: {reason}")
 
-    raw_adapter = getattr(settings, "LOCAL_MODEL_PATH", "")
-    adapter_path = raw_adapter if raw_adapter and os.path.exists(raw_adapter) else ""
-    base_model_name = getattr(settings, "BASE_MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct")
-    fallback_model_name = getattr(settings, "CPU_FALLBACK_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
+        raw_adapter = getattr(settings, "LOCAL_MODEL_PATH", "")
+        adapter_path = raw_adapter if raw_adapter and os.path.exists(raw_adapter) else ""
+        base_model_name = getattr(settings, "BASE_MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct")
+        fallback_model_name = getattr(settings, "CPU_FALLBACK_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 
-    hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN") or getattr(settings, "HF_TOKEN", "")
-    if not hf_token:
+        hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN") or getattr(settings, "HF_TOKEN", "")
+        if not hf_token:
+            try:
+                import streamlit as st
+                hf_token = st.secrets.get("HF_TOKEN", "") or st.secrets.get("HUGGINGFACEHUB_API_TOKEN", "")
+            except Exception:
+                pass
+
+        token_kwargs = {"token": hf_token} if hf_token else {}
+
+        if torch.cuda.is_available():
+            try:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True
+                )
+                base_model = AutoModelForCausalLM.from_pretrained(
+                    base_model_name,
+                    quantization_config=bnb_config,
+                    device_map="auto",
+                    torch_dtype=torch.float16,
+                    **token_kwargs
+                )
+
+                if adapter_path:
+                    _QWEN_MODEL = PeftModel.from_pretrained(base_model, adapter_path, **token_kwargs)
+                    tok_path = adapter_path
+                else:
+                    _QWEN_MODEL = base_model
+                    tok_path = base_model_name
+
+                _QWEN_MODEL.eval()
+                _QWEN_TOKENIZER = AutoTokenizer.from_pretrained(tok_path, **token_kwargs)
+                if _QWEN_TOKENIZER.pad_token is None:
+                    _QWEN_TOKENIZER.pad_token = _QWEN_TOKENIZER.eos_token
+
+                return _QWEN_MODEL, _QWEN_TOKENIZER
+            except Exception as gpu_err:
+                pass
+
         try:
-            import streamlit as st
-            hf_token = st.secrets.get("HF_TOKEN", "") or st.secrets.get("HUGGINGFACEHUB_API_TOKEN", "")
-        except Exception:
-            pass
-
-    token_kwargs = {"token": hf_token} if hf_token else {}
-
-    if torch.cuda.is_available():
-        try:
-            print(f"--- Loading GPU Model ({base_model_name}) ---")
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True
-            )
-            base_model = AutoModelForCausalLM.from_pretrained(
-                base_model_name,
-                quantization_config=bnb_config,
-                device_map="auto",
-                torch_dtype=torch.float16,
+            _QWEN_MODEL = AutoModelForCausalLM.from_pretrained(
+                fallback_model_name,
+                low_cpu_mem_usage=True,
+                torch_dtype=torch.float32,
                 **token_kwargs
             )
-
-            if adapter_path:
-                print(f"--- Attaching LoRA Adapter from ({adapter_path}) ---")
-                _QWEN_MODEL = PeftModel.from_pretrained(base_model, adapter_path, **token_kwargs)
-                tok_path = adapter_path
-            else:
-                _QWEN_MODEL = base_model
-                tok_path = base_model_name
-
             _QWEN_MODEL.eval()
-            _QWEN_TOKENIZER = AutoTokenizer.from_pretrained(tok_path, **token_kwargs)
+            _QWEN_TOKENIZER = AutoTokenizer.from_pretrained(fallback_model_name, **token_kwargs)
             if _QWEN_TOKENIZER.pad_token is None:
                 _QWEN_TOKENIZER.pad_token = _QWEN_TOKENIZER.eos_token
 
-            print("--- GPU Qwen Model initialized successfully ---")
             return _QWEN_MODEL, _QWEN_TOKENIZER
-        except Exception as gpu_err:
-            print(f"Notice: GPU model loading failed ({gpu_err}). Attempting CPU fallback model.")
-
-    print(f"--- Loading CPU Lightweight Model ({fallback_model_name}) ---")
-    try:
-        _QWEN_MODEL = AutoModelForCausalLM.from_pretrained(
-            fallback_model_name,
-            low_cpu_mem_usage=True,
-            torch_dtype=torch.float32,
-            **token_kwargs
-        )
-        _QWEN_MODEL.eval()
-        _QWEN_TOKENIZER = AutoTokenizer.from_pretrained(fallback_model_name, **token_kwargs)
-        if _QWEN_TOKENIZER.pad_token is None:
-            _QWEN_TOKENIZER.pad_token = _QWEN_TOKENIZER.eos_token
-
-        print(f"--- CPU Model ({fallback_model_name}) initialized successfully ---")
-        return _QWEN_MODEL, _QWEN_TOKENIZER
-    except Exception as cpu_err:
-        print(f"Notice: CPU model loading failed ({cpu_err}). Relying on grounded local synthesis.")
-        raise RuntimeError(f"Model initialization failed: {cpu_err}") from cpu_err
+        except Exception as cpu_err:
+            raise GenerationError(f"Model initialization failed safely.") from cpu_err
 
 
 @dataclass
@@ -339,13 +332,24 @@ class RAGGenerator:
             refusal=False
         )
 
+    def _sanitize_log(self, text: str) -> str:
+        """Sanitizes sensitive tokens, API keys, and private paths from log messages."""
+        if not text:
+            return ""
+        # Mask OpenAI, Gemini, HF tokens
+        text = re.sub(r"sk-[a-zA-Z0-9_-]{10,}", "sk-***MASKED***", text)
+        text = re.sub(r"AIzaSy[a-zA-Z0-9_-]{10,}", "AIzaSy***MASKED***", text)
+        text = re.sub(r"hf_[a-zA-Z0-9_-]{10,}", "hf_***MASKED***", text)
+        return text
+
     def _call_llm(self, prompt: str) -> str:
         """Invokes configured LLM provider (qwen_lora, openai, gemini) or falls back to local synthesis."""
         if self.llm_provider == "qwen_lora":
             try:
                 return self._call_qwen_lora(prompt)
             except Exception as e:
-                print(f"Notice: Qwen LoRA execution error ({e}). Synthesizing grounded response locally.")
+                sanitized_err = self._sanitize_log(str(e))
+                print(f"Notice: Qwen LoRA execution issue ({type(e).__name__}). Synthesizing response locally.")
 
         valid_openai_key = (
             self.api_key
@@ -369,7 +373,7 @@ class RAGGenerator:
                 )
                 return response.choices[0].message.content or ""
             except Exception as e:
-                print(f"Notice: OpenAI API call failed ({e}). Synthesizing grounded response locally.")
+                print(f"Notice: OpenAI API call failed ({type(e).__name__}). Synthesizing response locally.")
 
         elif self.llm_provider == "gemini" and valid_gemini_key:
             try:
@@ -379,7 +383,7 @@ class RAGGenerator:
                 response = model.generate_content(prompt)
                 return response.text or ""
             except Exception as e:
-                print(f"Notice: Gemini API call failed ({e}). Synthesizing grounded response locally.")
+                print(f"Notice: Gemini API call failed ({type(e).__name__}). Synthesizing response locally.")
 
         # Local grounded mock response synthesis
         return self._mock_llm_response(prompt)

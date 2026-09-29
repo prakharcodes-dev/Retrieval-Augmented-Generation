@@ -92,19 +92,22 @@ class TextChunker:
                 pass
         return max(1, len(text) // 4)
 
-    def _split_text_by_separators(self, text: str, separators: List[str]) -> List[str]:
+    def _split_text_by_separators(self, text: str, separators: List[str], max_depth: int = 10) -> List[str]:
         """Recursively splits text using hierarchical separators to preserve context boundaries."""
         if not text or not text.strip():
             return []
 
-        if not separators:
-            return [text]
+        if not separators or max_depth <= 0:
+            # Fallback character slice window to prevent creating millions of 1-char strings
+            step = max(1, self.chunk_size * 4)
+            return [text[i:i + step] for i in range(0, len(text), step)]
 
         separator = separators[0]
         next_separators = separators[1:]
 
         if separator == "":
-            return list(text)
+            step = max(1, self.chunk_size * 4)
+            return [text[i:i + step] for i in range(0, len(text), step)]
 
         splits = text.split(separator)
         result: List[str] = []
@@ -115,7 +118,7 @@ class TextChunker:
             piece = split + (separator if i < len(splits) - 1 and separator != " " else "")
 
             if self.count_tokens(piece) > self.chunk_size and next_separators:
-                sub_splits = self._split_text_by_separators(piece, next_separators)
+                sub_splits = self._split_text_by_separators(piece, next_separators, max_depth=max_depth - 1)
                 result.extend(sub_splits)
             else:
                 if piece.strip():

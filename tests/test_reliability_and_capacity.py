@@ -213,3 +213,60 @@ def test_operation_state_transitions():
     tracker.reset()
     assert tracker.current_state == OperationState.READY
     assert tracker.last_error is None
+
+
+def test_unbroken_text_chunking_dos_prevention():
+    """Verifies TextChunker handles unbroken text without memory/CPU exhaustion (Fixes CWE-400)."""
+    chunker = TextChunker(chunk_size=100)
+    unbroken_text = "A" * 50000
+    meta = {"document_id": "doc_unbroken", "page_number": 1}
+    chunks = chunker.split_text(unbroken_text, meta)
+
+    assert len(chunks) > 0
+    assert len(chunks) < 50000  # Must not create 50,000 single character strings
+    for chunk in chunks:
+        assert isinstance(chunk, Chunk)
+
+
+def test_vector_store_metadata_sanitization_and_isolation(tmp_path):
+    """Verifies metadata truncation and document deletion isolation (Fixes CWE-862 & CWE-400)."""
+    store = ChromaVectorStore(
+        persist_directory=str(tmp_path / "iso_store"),
+        collection_name="iso_coll",
+        embedding_service=EmbeddingService(provider="mock")
+    )
+
+    long_meta_value = "X" * 2000
+    chunk1 = Chunk(text="Doc 1 chunk", metadata={"document_id": "doc_A", "file_hash": "hash_A", "extra": long_meta_value}, chunk_id="doc_A_chunk_001")
+    chunk2 = Chunk(text="Doc 2 chunk", metadata={"document_id": "doc_B", "file_hash": "hash_B"}, chunk_id="doc_B_chunk_001")
+
+    store.add_chunks([chunk1, chunk2])
+    assert store.get_count() == 2
+
+    # Query with metadata filter
+    res_A = store.query("Doc", where={"document_id": "doc_A"})
+    assert len(res_A) == 1
+    assert res_A[0]["chunk_id"] == "doc_A_chunk_001"
+
+    # Truncated metadata check
+    assert len(res_A[0]["metadata"]["extra"]) <= 1005
+
+    # Isolated deletion of doc_A only
+    store.delete_document(document_id="doc_A")
+    assert store.get_count() == 1
+
+    res_B = store.query("Doc")
+    assert len(res_B) == 1
+    assert res_B[0]["chunk_id"] == "doc_B_chunk_001"
+
+
+def test_sensitive_data_log_masking():
+    """Verifies RAGGenerator masks sensitive API keys and tokens in log outputs (Fixes Sensitive Data Exposure)."""
+    generator = RAGGenerator()
+    sensitive_text = "OpenAI key sk-proj1234567890abcdef and Gemini key AIzaSy1234567890abcdef failed"
+    masked = generator._sanitize_log(sensitive_text)
+
+    assert "sk-proj1234567890abcdef" not in masked
+    assert "AIzaSy1234567890abcdef" not in masked
+    assert "sk-***MASKED***" in masked
+    assert "AIzaSy***MASKED***" in masked
