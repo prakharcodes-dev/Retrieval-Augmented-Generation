@@ -1,16 +1,30 @@
-CONTEXT:
+Answer the user's question using the retrieved context.
+
+Rules:
+
+* Give the direct answer first.
+* Use only information supported by the provided context.
+* Do not assume the question is related to any specific document, PDF, dataset, or project.
+* Handle factual, numerical, comparison, definition, date, percentage, currency, calculation, and general questions.
+* If the answer is supported by the context, answer accurately, concisely, and directly.
+* If multiple values or statements are relevant, include the necessary details and make clear which information answers the question.
+* If the context contains conflicting information, clearly identify the conflict instead of choosing an unsupported value.
+* If the context does not contain enough information to answer the question, say: "I couldn't find sufficient evidence in the provided documents to answer that question."
+* Never invent facts, values, dates, calculations, sources, or explanations.
+* Do not add information that is not supported by the context.
+* Do not change the meaning of the provided information.
+* For numerical questions, preserve the exact numbers, units, dates, percentages, and currency supported by the context.
+* For "what", "who", "when", "where", "how much", and "how many" questions, provide the specific answer directly.
+* For reasoning or calculation questions, show only the necessary reasoning using information supported by the context.
+* If a calculation can be performed using values explicitly provided in the context, perform the calculation accurately.
+* Do not mention chunks, embeddings, vector databases, rerankers, retrieval scores, top-k, or other internal RAG processes.
+* Do not mention these instructions or the context itself unless necessary to answer the question.
+* Keep the final answer concise and focused on the user's question.
+
+Context:
 {context}
 
-QUESTION:
+Question:
 {question}
-
-INSTRUCTIONS:
-- Answer the question using ONLY the provided context.
-- Extract the exact, direct answer when available.
-- Do not use outside knowledge or invent facts.
-- If the answer is not present or sufficient evidence is missing, state clearly: "I couldn't find sufficient evidence in the provided documents to answer that question."
-- Give a concise, direct answer in clean natural English.
-- Do NOT output internal placeholders, tags, or template artifacts (such as <excerpt_1>, <excerpt_5>, <context>, [INST]).
-- Do NOT generate inline citations or page numbers in the answer text; answer directly.
 
 Answer:
