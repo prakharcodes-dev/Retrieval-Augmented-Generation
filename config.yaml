@@ -16,6 +16,7 @@ embedding:
 
 llm:
   provider: gemini
-  model: gemini-2.5-flash
+  model: gemini-3.8-flash
   base_model: Qwen/Qwen2.5-3B-Instruct
   temperature: 0.0
+

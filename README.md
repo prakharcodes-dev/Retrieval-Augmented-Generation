@@ -15,6 +15,12 @@ short_description: Production-Ready RAG System with Page-Batched Streaming, Memo
 
 **RAG Document Assistant** is a high-capacity, production-ready Retrieval-Augmented Generation (RAG) system built with Python, PyMuPDF, ChromaDB, and Streamlit/Gradio. It features page-batched streaming ingestion, centralized memory guarding (`ResourceGuard`), deterministic chunking, lazy LLM loading, and verifiable citations.
 
+**To use the deployed RAG app, add `GEMINI_API_KEY` in the app's Streamlit Settings → Secrets. Never put the API key in this README or commit it.**
+
+### Gemini model configuration
+
+The Gemini answer model is configured as `gemini-3.8-flash` in `config.yaml`. The Gemini generation call uses low thinking effort to reduce response latency and token use, with a 512-token answer limit. If `LLM_MODEL` is set in Streamlit Secrets or the environment, it overrides the model in `config.yaml`; set it to `gemini-3.8-flash` or remove that override. The RAG retrieval step remains enabled and supplies document context to Gemini.
+
 ---
 
 ## 📁 File Storage Locations & Directory Structure
@@ -140,7 +146,7 @@ chunking:
   chunk_overlap: 100
 
 retrieval:
-  vector_top_k: 5
+  vector_top_k: 4
 
 vector_store:
   provider: chroma
@@ -148,15 +154,17 @@ vector_store:
   collection_name: rag_documents
 
 embedding:
-  provider: openai
+  provider: auto
   model: text-embedding-3-small
 
 llm:
-  provider: qwen_lora
+  provider: gemini
+  model: gemini-3.8-flash
   base_model: Qwen/Qwen2.5-3B-Instruct
-  adapter_path: D:\Training\trained_model
   temperature: 0.0
 ```
+
+This example matches the current checked-in `config.yaml`. `base_model` is used only when the local Qwen provider is selected; the deployed app uses Gemini.
 
 ---
 
@@ -196,3 +204,4 @@ Run the complete 32-test pytest suite:
 ```
 
 All 32 tests (covering document loading, cleaning, chunking, embedding, vector retrieval, answer generation, citations, memory guards, and high chunk capacity) will execute and pass.
+

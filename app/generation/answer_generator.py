@@ -398,8 +398,8 @@ class RAGGenerator:
                     model=self.model_name,
                     contents=prompt,
                     config=types.GenerateContentConfig(
-                        temperature=settings.LLM_TEMPERATURE,
                         max_output_tokens=512,
+                        thinking_config=types.ThinkingConfig(thinking_level="low"),
                     ),
                 )
                 return response.text or ""
@@ -688,3 +688,4 @@ class RAGGenerator:
 
 # Alias for backward compatibility
 AnswerGenerator = RAGGenerator
+

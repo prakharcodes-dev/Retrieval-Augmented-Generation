@@ -32,7 +32,7 @@ class Settings(BaseSettings):
 
     # Provider Options
     LLM_PROVIDER: str = "gemini"
-    LLM_MODEL: str = "gemini-2.5-flash"
+    LLM_MODEL: str = "gemini-3.8-flash"
     LLM_TEMPERATURE: float = 0.0
 
     LOCAL_MODEL_PATH: str = ""
@@ -127,3 +127,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
