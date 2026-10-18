@@ -142,12 +142,16 @@ def test_resource_guard_ram_check():
         ResourceGuard.check_memory(min_available_mb=99999999.0, context="test_guard")
 
 
-def test_failed_embedding_fallback():
-    """Verifies EmbeddingService falls back to deterministic mock when provider fails."""
+def test_failed_embedding_does_not_silently_fallback(monkeypatch):
+    """Provider errors must be visible; mock vectors produce misleading retrieval results."""
     service = EmbeddingService(provider="openai", api_key="sk-invalid-key-test")
-    embeddings = service.embed_documents(["Test sentence for fallback embedding."])
-    assert len(embeddings) == 1
-    assert len(embeddings[0]) == 384  # Deterministic mock dimension
+
+    def fail_embedding_request(**kwargs):
+        raise ValueError("simulated provider failure")
+
+    monkeypatch.setattr(service.client.embeddings, "create", fail_embedding_request)
+    with pytest.raises(RuntimeError, match="OpenAI embedding request failed"):
+        service.embed_documents(["Test sentence with provider failure."])
 
 
 def test_llm_lazy_loading_isolation(tmp_path):

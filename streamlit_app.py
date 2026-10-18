@@ -54,7 +54,12 @@ def main():
     if "app_state" not in st.session_state:
         st.session_state.app_state = OperationState.READY
 
-    vector_store = get_vector_store()
+    try:
+        vector_store = get_vector_store()
+    except Exception as exc:
+        st.error(f"Cannot initialize document search: {exc}")
+        st.info("Add GEMINI_API_KEY or OPENAI_API_KEY to Streamlit Secrets, then restart the app.")
+        st.stop()
     retriever = VectorRetriever(vector_store=vector_store)
 
     with st.sidebar:
@@ -181,6 +186,8 @@ def main():
         st.session_state.pending_prompt = None
 
     if prompt:
+        # Bound per-session rendering and memory as chats get longer.
+        st.session_state.messages = st.session_state.messages[-18:]
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)

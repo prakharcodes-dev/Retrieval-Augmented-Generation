@@ -18,10 +18,7 @@ try:
 except ImportError:
     psutil = None
 
-try:
-    import torch
-except ImportError:
-    torch = None
+torch = None
 
 
 class ResourceGuard:
@@ -60,10 +57,12 @@ class ResourceGuard:
             except Exception as e:
                 logger.warning(f"Failed to fetch psutil memory stats: {e}")
 
-        if torch is not None and torch.cuda.is_available():
+        # Do not import PyTorch merely to render the hosted app's RAM metric.
+        torch_module = torch or sys.modules.get("torch")
+        if torch_module is not None and torch_module.cuda.is_available():
             try:
                 stats["gpu_available"] = True
-                free_bytes, total_bytes = torch.cuda.mem_get_info()
+                free_bytes, total_bytes = torch_module.cuda.mem_get_info()
                 stats["free_vram_mb"] = round(free_bytes / (1024 * 1024), 2)
                 stats["total_vram_mb"] = round(total_bytes / (1024 * 1024), 2)
             except Exception as e:
@@ -181,7 +180,8 @@ class ResourceGuard:
         """Executes garbage collection safely to release unreferenced objects."""
         try:
             gc.collect()
-            if torch is not None and torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            torch_module = torch or sys.modules.get("torch")
+            if torch_module is not None and torch_module.cuda.is_available():
+                torch_module.cuda.empty_cache()
         except Exception as e:
             logger.warning(f"Error during garbage collection: {e}")
