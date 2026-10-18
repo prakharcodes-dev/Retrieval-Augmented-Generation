@@ -1,4 +1,6 @@
 import pytest
+import sys
+from types import ModuleType, SimpleNamespace
 from app.generation.answer_generator import RAGGenerator, CitedAnswer
 
 
@@ -76,3 +78,19 @@ def test_generate_with_context(mock_generator):
     assert answer.refusal is False
     assert "Sources:" in answer.answer
     assert "[1] employee_handbook.pdf — Page 1" in answer.answer
+
+
+def test_gemini_auth_key_with_aq_prefix_is_not_rejected(mock_generator, monkeypatch):
+    genai_types = ModuleType("google.genai")
+    genai_types.types = SimpleNamespace(GenerateContentConfig=lambda **kwargs: kwargs)
+    monkeypatch.setitem(sys.modules, "google.genai", genai_types)
+
+    mock_generator.llm_provider = "gemini"
+    mock_generator.api_key = "AQ.test-auth-key"
+    mock_generator._gemini_client = SimpleNamespace(
+        models=SimpleNamespace(
+            generate_content=lambda **kwargs: SimpleNamespace(text="Gemini answer")
+        )
+    )
+
+    assert mock_generator._call_llm("test prompt") == "Gemini answer"

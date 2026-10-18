@@ -123,7 +123,7 @@ class RAGGenerator:
     def _call_llm(self, prompt: str) -> str:
         """Invokes the selected LLM provider API with key validation."""
         valid_openai_key = self.api_key and self.api_key.startswith("sk-") and not self.api_key.startswith("sk-your-actual")
-        valid_gemini_key = self.api_key and not self.api_key.startswith("AQ.") and not self.api_key.startswith("your_")
+        valid_gemini_key = self.api_key and not self.api_key.startswith("your_")
 
         if self.llm_provider == "openai" and valid_openai_key:
             try:
