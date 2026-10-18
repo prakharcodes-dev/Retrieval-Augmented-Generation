@@ -1,8 +1,9 @@
-from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Tuple
+import os
 import re
 import warnings
 import threading
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Tuple
 from app.config.settings import settings
 from app.core.exceptions import GenerationError
 from app.core.resource_guard import ResourceGuard
@@ -61,7 +62,7 @@ def _get_qwen_lora_model() -> Tuple[Any, Any]:
                     base_model_name,
                     quantization_config=bnb_config,
                     device_map="auto",
-                    torch_dtype=torch.float16,
+                    dtype=torch.float16,
                     **token_kwargs
                 )
 
@@ -85,7 +86,7 @@ def _get_qwen_lora_model() -> Tuple[Any, Any]:
             _QWEN_MODEL = AutoModelForCausalLM.from_pretrained(
                 fallback_model_name,
                 low_cpu_mem_usage=True,
-                torch_dtype=torch.float32,
+                dtype=torch.float32,
                 **token_kwargs
             )
             _QWEN_MODEL.eval()
@@ -124,7 +125,54 @@ class RAGGenerator:
     ):
         self.llm_provider = (llm_provider or settings.LLM_PROVIDER).lower()
         self.model_name = model_name or settings.LLM_MODEL
-        self.api_key = api_key or settings.LLM_API_KEY or settings.OPENAI_API_KEY or settings.GEMINI_API_KEY
+
+        # Provider-specific API key resolution
+        if api_key:
+            self.api_key = api_key
+        elif self.llm_provider == "gemini":
+            self.api_key = (
+                settings.GEMINI_API_KEY
+                or settings.LLM_API_KEY
+                or os.getenv("GEMINI_API_KEY", "")
+                or os.getenv("LLM_API_KEY", "")
+            )
+            if not self.api_key:
+                try:
+                    import streamlit as st
+                    if hasattr(st, "secrets"):
+                        self.api_key = str(st.secrets.get("GEMINI_API_KEY", "") or st.secrets.get("LLM_API_KEY", ""))
+                except Exception:
+                    pass
+        elif self.llm_provider == "openai":
+            self.api_key = (
+                settings.OPENAI_API_KEY
+                or settings.LLM_API_KEY
+                or os.getenv("OPENAI_API_KEY", "")
+                or os.getenv("LLM_API_KEY", "")
+            )
+            if not self.api_key:
+                try:
+                    import streamlit as st
+                    if hasattr(st, "secrets"):
+                        self.api_key = str(st.secrets.get("OPENAI_API_KEY", "") or st.secrets.get("LLM_API_KEY", ""))
+                except Exception:
+                    pass
+        else:
+            self.api_key = (
+                settings.LLM_API_KEY
+                or settings.GEMINI_API_KEY
+                or settings.OPENAI_API_KEY
+                or os.getenv("LLM_API_KEY", "")
+            )
+
+        self._gemini_client = None
+        if self.llm_provider == "gemini" and self.api_key:
+            try:
+                from google import genai
+                self._gemini_client = genai.Client(api_key=self.api_key)
+            except ImportError as exc:
+                raise GenerationError("Gemini support requires google-genai.") from exc
+
         self.prompt_template = prompt_template or settings.get_prompt_template()
 
     def format_context(self, chunks: List[Dict[str, Any]]) -> str:
@@ -269,18 +317,6 @@ class RAGGenerator:
 
         citations = self.extract_citations(retrieved_chunks)
 
-        # Detect overview questions and return detailed structured overview
-        if self._is_overview_query(query):
-            overview_text = self._generate_structured_overview(query, retrieved_chunks)
-            citation_block = CitationFormatter.format_citations_block(citations)
-            final_output = f"{overview_text}\n\nSources:\n{citation_block}" if citation_block else overview_text
-            return CitedAnswer(
-                answer=final_output,
-                citations=citations,
-                retrieved_chunks=retrieved_chunks,
-                refusal=False
-            )
-
         context_str = self.format_context(retrieved_chunks)
 
         prompt = self.prompt_template.format(
@@ -343,26 +379,58 @@ class RAGGenerator:
         return text
 
     def _call_llm(self, prompt: str) -> str:
-        """Invokes configured LLM provider (qwen_lora, openai, gemini) or falls back to local synthesis."""
+        """Invokes configured LLM provider (gemini, qwen_lora, openai) or local mock."""
+        # 1. Gemini API Provider
+        if self.llm_provider == "gemini":
+            if (
+                not self.api_key
+                or self.api_key.startswith("your_")
+                or self.api_key.startswith("AQ.")
+                or self.api_key == "your-gemini-api-key-here"
+            ):
+                raise GenerationError(
+                    "Gemini API key is not configured. "
+                    "Please set GEMINI_API_KEY in Streamlit Secrets or environment variables."
+                )
+
+            try:
+                from google.genai import types
+                response = self._gemini_client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=settings.LLM_TEMPERATURE,
+                        max_output_tokens=512,
+                    ),
+                )
+                return response.text or ""
+            except Exception as e:
+                sanitized_err = self._sanitize_log(str(e))
+                raise GenerationError(
+                    f"Gemini API generation failed: {sanitized_err}"
+                ) from e
+
+        # 2. Local Qwen LoRA Provider (Only when explicitly selected)
         if self.llm_provider == "qwen_lora":
             try:
                 return self._call_qwen_lora(prompt)
             except Exception as e:
                 sanitized_err = self._sanitize_log(str(e))
                 print(f"Notice: Qwen LoRA execution issue ({type(e).__name__}). Synthesizing response locally.")
+                return self._mock_llm_response(prompt)
 
+        # 3. OpenAI Provider
         valid_openai_key = (
             self.api_key
             and self.api_key.startswith("sk-")
             and not self.api_key.startswith("sk-your-actual")
         )
-        valid_gemini_key = (
-            self.api_key
-            and not self.api_key.startswith("AQ.")
-            and not self.api_key.startswith("your_")
-        )
 
-        if self.llm_provider == "openai" and valid_openai_key:
+        if self.llm_provider == "openai":
+            if not valid_openai_key:
+                raise GenerationError(
+                    "OpenAI API key is not configured. Please set OPENAI_API_KEY."
+                )
             try:
                 from openai import OpenAI
                 client = OpenAI(api_key=self.api_key)
@@ -373,19 +441,10 @@ class RAGGenerator:
                 )
                 return response.choices[0].message.content or ""
             except Exception as e:
-                print(f"Notice: OpenAI API call failed ({type(e).__name__}). Synthesizing response locally.")
+                sanitized_err = self._sanitize_log(str(e))
+                raise GenerationError(f"OpenAI API call failed: {sanitized_err}") from e
 
-        elif self.llm_provider == "gemini" and valid_gemini_key:
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=self.api_key)
-                model = genai.GenerativeModel(self.model_name)
-                response = model.generate_content(prompt)
-                return response.text or ""
-            except Exception as e:
-                print(f"Notice: Gemini API call failed ({type(e).__name__}). Synthesizing response locally.")
-
-        # Local grounded mock response synthesis
+        # 4. Mock / Local grounded response synthesis (for automated tests)
         return self._mock_llm_response(prompt)
 
     def _call_qwen_lora(self, prompt: str) -> str:

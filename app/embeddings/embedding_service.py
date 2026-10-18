@@ -21,6 +21,35 @@ class EmbeddingService(EmbeddingFunction):
         self.api_key = api_key or settings.EMBEDDING_API_KEY or settings.OPENAI_API_KEY
         self._st_model = None
 
+        if self.provider == "auto":
+            valid_openai_key = (
+                self.api_key
+                and self.api_key.startswith("sk-")
+                and not self.api_key.startswith("sk-your-actual")
+            )
+            if valid_openai_key:
+                self.provider = "openai"
+            elif settings.GEMINI_API_KEY or settings.LLM_API_KEY:
+                self.provider = "gemini"
+                self.api_key = settings.GEMINI_API_KEY or settings.LLM_API_KEY
+            else:
+                raise ValueError("No embedding API key is configured. Set OPENAI_API_KEY or GEMINI_API_KEY in Streamlit secrets.")
+
+        if self.provider == "gemini":
+            self.api_key = self.api_key or settings.GEMINI_API_KEY or settings.LLM_API_KEY
+            if not self.api_key:
+                raise ValueError("Gemini embeddings require GEMINI_API_KEY in Streamlit secrets.")
+            # The configured model name is OpenAI's default; use Gemini's actual model ID.
+            self.model_name = "gemini-embedding-001"
+            try:
+                from google import genai
+                from google.genai import types
+                self._genai = genai.Client(api_key=self.api_key)
+                self._genai_types = types
+            except ImportError as exc:
+                raise RuntimeError("Gemini embedding support requires google-genai.") from exc
+            return
+
         valid_openai_key = (
             self.api_key
             and self.api_key.startswith("sk-")
@@ -32,15 +61,17 @@ class EmbeddingService(EmbeddingFunction):
                 from openai import OpenAI
                 self.client = OpenAI(api_key=self.api_key)
             except Exception as e:
-                print(f"Notice: Failed to initialize OpenAI client ({e}). Falling back to mock embeddings.")
-                self.provider = "mock"
+                raise RuntimeError("OpenAI embedding client could not be initialized.") from e
+        elif self.provider == "openai":
+            raise ValueError("OpenAI embeddings require a valid OPENAI_API_KEY.")
         elif self.provider == "sentence-transformers":
             try:
                 from sentence_transformers import SentenceTransformer
                 self._st_model = SentenceTransformer(self.model_name or "all-MiniLM-L6-v2")
-            except ImportError:
-                print("Notice: sentence-transformers not installed. Falling back to mock embeddings.")
-                self.provider = "mock"
+            except Exception as exc:
+                raise RuntimeError("SentenceTransformer embedding model could not be loaded.") from exc
+        elif self.provider not in ("openai", "sentence-transformers", "mock"):
+            raise ValueError(f"Unsupported embedding provider: {self.provider}")
         else:
             self.provider = "mock"
 
@@ -61,16 +92,21 @@ class EmbeddingService(EmbeddingFunction):
                 )
                 return [data.embedding for data in response.data]
             except Exception as e:
-                print(f"Error generating OpenAI embeddings ({e}). Falling back to deterministic mock.")
-                return [self._mock_embed(text) for text in texts]
+                raise RuntimeError(f"OpenAI embedding request failed: {e}") from e
+
+        if self.provider == "gemini":
+            vectors: List[List[float]] = []
+            # Keep remote embedding calls bounded while embedding chunks in batches.
+            for start in range(0, len(texts), 64):
+                vectors.extend(self._gemini_embed_batch(texts[start:start + 64]))
+            return vectors
 
         elif self.provider == "sentence-transformers" and self._st_model:
             try:
                 embeddings = self._st_model.encode(texts, convert_to_numpy=True)
                 return embeddings.tolist()
             except Exception as e:
-                print(f"Error generating SentenceTransformer embeddings ({e}). Falling back to mock.")
-                return [self._mock_embed(text) for text in texts]
+                raise RuntimeError(f"SentenceTransformer embedding request failed: {e}") from e
 
         # Fallback Mock Provider
         return [self._mock_embed(text) for text in texts]
@@ -81,6 +117,8 @@ class EmbeddingService(EmbeddingFunction):
         if not target:
             return []
 
+        if isinstance(target, str) and self.provider == "gemini":
+            return self._gemini_embed(target, "RETRIEVAL_QUERY")
         if isinstance(target, str):
             res = self.embed_documents([target])
             return res[0] if res else []
@@ -89,8 +127,52 @@ class EmbeddingService(EmbeddingFunction):
 
         return self.embed_documents([str(target)])
 
-    def name(self) -> str:
-        return f"embedding_service_{self.provider}_{self.model_name}"
+    def _gemini_embed(self, text: str, task_type: str) -> List[float]:
+        """Create semantic vectors through Gemini; never substitute random mock vectors on failure."""
+        try:
+            result = self._genai.models.embed_content(
+                model="gemini-embedding-001",
+                contents=text,
+                config=self._genai_types.EmbedContentConfig(
+                    task_type=task_type,
+                    output_dimensionality=768,
+                ),
+            )
+            return result.embeddings[0].values
+        except Exception as exc:
+            raise RuntimeError(f"Gemini embedding request failed: {exc}") from exc
+
+    def _gemini_embed_batch(self, texts: List[str]) -> List[List[float]]:
+        try:
+            result = self._genai.models.embed_content(
+                model="gemini-embedding-001",
+                contents=texts,
+                config=self._genai_types.EmbedContentConfig(
+                    task_type="RETRIEVAL_DOCUMENT",
+                    output_dimensionality=768,
+                ),
+            )
+            embeddings = [item.values for item in result.embeddings]
+            if len(embeddings) != len(texts):
+                raise ValueError("Gemini returned a different number of vectors than input texts.")
+            return embeddings
+        except Exception as exc:
+            raise RuntimeError(f"Gemini batch embedding request failed: {exc}") from exc
+
+    @staticmethod
+    def name() -> str:
+        return "rag_embedding_service"
+
+    def get_config(self) -> dict:
+        """Expose the embedding configuration to Chroma for persistence compatibility."""
+        return {"provider": self.provider, "model_name": self.model_name}
+
+    @staticmethod
+    def build_from_config(config: dict) -> "EmbeddingService":
+        return EmbeddingService(
+            provider=config["provider"],
+            model_name=config["model_name"],
+        )
 
     def _mock_embed(self, text: str) -> List[float]:
         """Generates a deterministic normalized pseudo-embedding vector of dimension 384 based on text hash."""

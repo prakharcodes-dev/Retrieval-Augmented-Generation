@@ -3,7 +3,7 @@ chunking:
   chunk_overlap: 100
 
 retrieval:
-  vector_top_k: 5
+  vector_top_k: 4
 
 vector_store:
   provider: chroma
@@ -11,11 +11,11 @@ vector_store:
   collection_name: rag_documents
 
 embedding:
-  provider: openai
+  provider: auto
   model: text-embedding-3-small
 
 llm:
-  provider: qwen_lora
+  provider: gemini
+  model: gemini-2.5-flash
   base_model: Qwen/Qwen2.5-3B-Instruct
-  adapter_path: D:\Training\trained_model
   temperature: 0.0

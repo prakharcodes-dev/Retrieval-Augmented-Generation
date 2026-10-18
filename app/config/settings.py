@@ -31,21 +31,21 @@ class Settings(BaseSettings):
     HF_TOKEN: str = ""
 
     # Provider Options
-    LLM_PROVIDER: str = "qwen_lora"
-    LLM_MODEL: str = "Qwen/Qwen2.5-3B-Instruct"
+    LLM_PROVIDER: str = "gemini"
+    LLM_MODEL: str = "gemini-2.5-flash"
     LLM_TEMPERATURE: float = 0.0
 
-    LOCAL_MODEL_PATH: str = r"D:\Training\trained_model"
+    LOCAL_MODEL_PATH: str = ""
     BASE_MODEL_NAME: str = "Qwen/Qwen2.5-3B-Instruct"
     CPU_FALLBACK_MODEL: str = "Qwen/Qwen2.5-0.5B-Instruct"
 
-    EMBEDDING_PROVIDER: str = "openai"
+    EMBEDDING_PROVIDER: str = "auto"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
 
     # Chunking & Retrieval & Validation Parameters
     CHUNK_SIZE: int = 700
     CHUNK_OVERLAP: int = 100
-    TOP_K: int = 5
+    TOP_K: int = 4
     MAX_FILE_SIZE_MB: int = 25
     MAX_PDF_PAGES: int = 150
 
@@ -83,6 +83,33 @@ class Settings(BaseSettings):
                     self.LOCAL_MODEL_PATH = ""
             if "base_model" in yaml_cfg["llm"]:
                 self.BASE_MODEL_NAME = yaml_cfg["llm"]["base_model"]
+
+        # Check Streamlit Cloud secrets if available
+        try:
+            import streamlit as st
+            if hasattr(st, "secrets"):
+                if not self.GEMINI_API_KEY and "GEMINI_API_KEY" in st.secrets:
+                    self.GEMINI_API_KEY = str(st.secrets["GEMINI_API_KEY"])
+                if not self.OPENAI_API_KEY and "OPENAI_API_KEY" in st.secrets:
+                    self.OPENAI_API_KEY = str(st.secrets["OPENAI_API_KEY"])
+                if not self.LLM_API_KEY and "LLM_API_KEY" in st.secrets:
+                    self.LLM_API_KEY = str(st.secrets["LLM_API_KEY"])
+                if "LLM_PROVIDER" in st.secrets:
+                    self.LLM_PROVIDER = str(st.secrets["LLM_PROVIDER"])
+                if "LLM_MODEL" in st.secrets:
+                    self.LLM_MODEL = str(st.secrets["LLM_MODEL"])
+        except Exception:
+            pass
+
+        # Environment variables take precedence if explicitly set
+        if "LLM_PROVIDER" in os.environ:
+            self.LLM_PROVIDER = os.environ["LLM_PROVIDER"]
+        if "LLM_MODEL" in os.environ:
+            self.LLM_MODEL = os.environ["LLM_MODEL"]
+        if "GEMINI_API_KEY" in os.environ:
+            self.GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+        if "OPENAI_API_KEY" in os.environ:
+            self.OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
     def get_prompt_template(self) -> str:
         prompt_file = Path(self.PROMPT_PATH)
