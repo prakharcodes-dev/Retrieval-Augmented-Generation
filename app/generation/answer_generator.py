@@ -385,7 +385,6 @@ class RAGGenerator:
             if (
                 not self.api_key
                 or self.api_key.startswith("your_")
-                or self.api_key.startswith("AQ.")
                 or self.api_key == "your-gemini-api-key-here"
             ):
                 raise GenerationError(
