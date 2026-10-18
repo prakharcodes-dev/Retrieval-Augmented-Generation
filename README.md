@@ -19,7 +19,7 @@ short_description: Production-Ready RAG System with Page-Batched Streaming, Memo
 
 ### Gemini model configuration
 
-The Gemini answer model is configured as `gemini-3.8-flash` in `config.yaml`. The Gemini generation call uses low thinking effort to reduce response latency and token use, with a 512-token answer limit. If `LLM_MODEL` is set in Streamlit Secrets or the environment, it overrides the model in `config.yaml`; set it to `gemini-3.8-flash` or remove that override. The RAG retrieval step remains enabled and supplies document context to Gemini.
+The Gemini answer model is configured as `gemini-3.8-flash` in `config.yaml`. The Gemini generation call uses low thinking effort to reduce response latency and token use, with a 512-token answer limit. `LLM_MODEL` in Streamlit Secrets or the environment overrides `config.yaml`, but a legacy `gemini-2.5-flash` override is automatically migrated to `gemini-3.8-flash`. The RAG retrieval step remains enabled and supplies document context to Gemini.
 
 ---
 

@@ -111,6 +111,15 @@ class Settings(BaseSettings):
         if "OPENAI_API_KEY" in os.environ:
             self.OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
+        # A legacy Streamlit secret or environment variable can override config.yaml.
+        # Migrate the retired Gemini model so an old LLM_MODEL override cannot
+        # silently keep the deployed app on gemini-2.5-flash.
+        if (
+            self.LLM_PROVIDER.strip().lower() == "gemini"
+            and self.LLM_MODEL.strip() in {"gemini-2.5-flash", "models/gemini-2.5-flash"}
+        ):
+            self.LLM_MODEL = "gemini-3.8-flash"
+
     def get_prompt_template(self) -> str:
         prompt_file = Path(self.PROMPT_PATH)
         if not prompt_file.is_file():
