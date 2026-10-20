@@ -1,7 +1,8 @@
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import yaml
+from dotenv import dotenv_values
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,15 +25,14 @@ class Settings(BaseSettings):
     )
 
     # API Keys
-    OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
-    LLM_API_KEY: str = ""
-    EMBEDDING_API_KEY: str = ""
+    GROQ_API_KEY: str = ""
     HF_TOKEN: str = ""
 
     # Provider Options
     LLM_PROVIDER: str = "gemini"
     LLM_MODEL: str = "gemini-3.8-flash"
+    GROQ_FALLBACK_MODEL: str = "qwen/qwen3.8-27b"
     LLM_TEMPERATURE: float = 0.0
 
     LOCAL_MODEL_PATH: str = ""
@@ -74,6 +74,7 @@ class Settings(BaseSettings):
         if "llm" in yaml_cfg:
             self.LLM_PROVIDER = yaml_cfg["llm"].get("provider", self.LLM_PROVIDER)
             self.LLM_MODEL = yaml_cfg["llm"].get("model", self.LLM_MODEL)
+            self.GROQ_FALLBACK_MODEL = yaml_cfg["llm"].get("groq_fallback_model", self.GROQ_FALLBACK_MODEL)
             self.LLM_TEMPERATURE = yaml_cfg["llm"].get("temperature", self.LLM_TEMPERATURE)
             if "adapter_path" in yaml_cfg["llm"]:
                 adapter_p = yaml_cfg["llm"]["adapter_path"]
@@ -84,32 +85,33 @@ class Settings(BaseSettings):
             if "base_model" in yaml_cfg["llm"]:
                 self.BASE_MODEL_NAME = yaml_cfg["llm"]["base_model"]
 
-        # Check Streamlit Cloud secrets if available
+        # Apply local .env values, Streamlit secrets, then real environment
+        # variables in increasing precedence. Only names are inspected here;
+        # credentials are never logged or included in errors.
+        config_keys = (
+            "GEMINI_API_KEY", "GROQ_API_KEY",
+            "LLM_PROVIDER", "LLM_MODEL", "LLM_TEMPERATURE", "GROQ_FALLBACK_MODEL",
+            "EMBEDDING_PROVIDER", "EMBEDDING_MODEL",
+            "VECTOR_STORE_PROVIDER", "CHROMA_PERSIST_DIR", "COLLECTION_NAME",
+        )
+        local_env = dotenv_values(Path(".env"))
+        for key in config_keys:
+            value = local_env.get(key)
+            if value is not None:
+                setattr(self, key, value)
+
+        # Streamlit secrets are optional during CLI use and local development.
         try:
             import streamlit as st
-            if hasattr(st, "secrets"):
-                if not self.GEMINI_API_KEY and "GEMINI_API_KEY" in st.secrets:
-                    self.GEMINI_API_KEY = str(st.secrets["GEMINI_API_KEY"])
-                if not self.OPENAI_API_KEY and "OPENAI_API_KEY" in st.secrets:
-                    self.OPENAI_API_KEY = str(st.secrets["OPENAI_API_KEY"])
-                if not self.LLM_API_KEY and "LLM_API_KEY" in st.secrets:
-                    self.LLM_API_KEY = str(st.secrets["LLM_API_KEY"])
-                if "LLM_PROVIDER" in st.secrets:
-                    self.LLM_PROVIDER = str(st.secrets["LLM_PROVIDER"])
-                if "LLM_MODEL" in st.secrets:
-                    self.LLM_MODEL = str(st.secrets["LLM_MODEL"])
+            for key in config_keys:
+                if key in st.secrets:
+                    setattr(self, key, st.secrets[key])
         except Exception:
             pass
 
-        # Environment variables take precedence if explicitly set
-        if "LLM_PROVIDER" in os.environ:
-            self.LLM_PROVIDER = os.environ["LLM_PROVIDER"]
-        if "LLM_MODEL" in os.environ:
-            self.LLM_MODEL = os.environ["LLM_MODEL"]
-        if "GEMINI_API_KEY" in os.environ:
-            self.GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-        if "OPENAI_API_KEY" in os.environ:
-            self.OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+        for key in config_keys:
+            if key in os.environ:
+                setattr(self, key, os.environ[key])
 
         # A legacy Streamlit secret or environment variable can override config.yaml.
         # Migrate the retired Gemini model so an old LLM_MODEL override cannot
@@ -136,4 +138,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

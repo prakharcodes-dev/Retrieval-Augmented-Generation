@@ -11,12 +11,12 @@ vector_store:
   collection_name: rag_documents
 
 embedding:
-  provider: auto
-  model: text-embedding-3-small
+  provider: gemini
+  model: gemini-embedding-001
 
 llm:
   provider: gemini
   model: gemini-3.8-flash
+  groq_fallback_model: qwen/qwen3.8-27b
   base_model: Qwen/Qwen2.5-3B-Instruct
   temperature: 0.0
-

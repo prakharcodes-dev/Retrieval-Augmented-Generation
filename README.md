@@ -17,9 +17,30 @@ short_description: Production-Ready RAG System with Page-Batched Streaming, Memo
 
 **To use the deployed RAG app, add `GEMINI_API_KEY` in the app's Streamlit Settings → Secrets. Never put the API key in this README or commit it.**
 
+## Local API key setup
+
+The application uses Gemini for primary answer generation and Gemini embeddings (`gemini-embedding-001`, 768 dimensions). Groq is the configured answer-generation fallback. Embeddings stay pinned to Gemini so changing the generation provider does not change vector dimensions or invalidate the existing index.
+
+1. From `D:\RAG`, install dependencies: `pip install -r requirements.txt`.
+2. Copy the template: `Copy-Item .streamlit/secrets.toml.example .streamlit/secrets.toml`.
+3. Open `.streamlit/secrets.toml` in an editor and replace the placeholders with your actual `GEMINI_API_KEY` and `GROQ_API_KEY`. Alternatively, put these variables in the root `.env` file.
+4. Run `streamlit run streamlit_app.py`.
+
+The app reads local `.env`, Streamlit Secrets, and process environment variables; process environment has highest precedence. Missing, malformed, rejected, or quota-limited credentials produce an actionable error. Key values are not displayed or logged. Never commit `.env` or `.streamlit/secrets.toml`.
+
+## Existing vector index and embedding changes
+
+The existing `vectorstore/` is ignored by Git and is not automatically recreated. If the app reports a vector dimension mismatch after selecting a different embedding provider/model, first back up the entire `vectorstore/` directory. Then configure the intended provider and run `python migrate_embeddings.py`. This copies document text, metadata, and IDs in batches of 16 and limits migration input to a conservative 18,000 tokens per rolling minute, below Gemini Embedding's documented 30,000 TPM limit. It verifies the copy and renames the original collection to `<collection>_pre_migration` for rollback. An interrupted run can be resumed by rerunning the command; keep the filesystem backup and collection backup until the migrated app has been checked. Never change embedding providers while retaining old vectors without this migration.
+
+## Streamlit Community Cloud secrets
+
+Open the deployed app's **Settings → Secrets**, add `GEMINI_API_KEY = "your-real-key"` and `GROQ_API_KEY = "your-real-key"`, then save. Gemini is used first; Groq is used only after Gemini exhausts transient retries. Allow the app to restart, then test a question against an uploaded document. The repository contains only placeholders in `.streamlit/secrets.toml.example`; the deployment's live state must be checked in Streamlit logs/UI and cannot be verified from local tests.
+
+Gemini generation uses the model configured in `config.yaml`, a 30-second request timeout, and at most three total attempts for transient 503/429/network failures with jittered exponential backoff. SDK retries are disabled to prevent stacked retry loops. After Gemini retries fail temporarily, the app makes one attempt through Groq using `GROQ_FALLBACK_MODEL` (`qwen/qwen3.8-27b` by default). Groq receives the same retrieved document context; citations are attached by the existing RAG citation pipeline. The UI identifies when Groq supplied the answer. If Groq also fails, the question remains in the chat and the UI offers a manual retry. Add `GROQ_API_KEY` to enable this fallback. Availability and quotas depend on the Groq account and selected model.
+
 ### Gemini model configuration
 
-The Gemini answer model is configured as `gemini-3.8-flash` in `config.yaml`. The Gemini generation call uses low thinking effort to reduce response latency and token use, with a 512-token answer limit. `LLM_MODEL` in Streamlit Secrets or the environment overrides `config.yaml`, but a legacy `gemini-2.5-flash` override is automatically migrated to `gemini-3.8-flash`. The RAG retrieval step remains enabled and supplies document context to Gemini.
+The Gemini primary answer model is `gemini-3.8-flash`; the cross-provider backup is the Groq-hosted Qwen model `qwen/qwen3.8-27b`. Configure `LLM_MODEL` or `GROQ_FALLBACK_MODEL` in Streamlit Secrets or the environment to override `config.yaml`. A legacy `gemini-2.5-flash` override is automatically migrated to `gemini-3.8-flash`. The RAG retrieval step remains enabled and supplies document context to either provider.
 
 ---
 
@@ -35,7 +56,7 @@ d:\RAG\
 │   │   ├── exceptions.py          # Subsystem exception hierarchy
 │   │   ├── resource_guard.py      # RAM/VRAM/Workload monitor (psutil/cuda)
 │   │   └── state.py               # Application state machine (READY, INGESTING, etc.)
-│   ├── embeddings/                # Vector embedding services (OpenAI/SentenceTransformers/Mock)
+│   ├── embeddings/                # Vector embedding services (Gemini/SentenceTransformers/Mock)
 │   ├── generation/                # Answer generator & citation formatters (Qwen+LoRA / CPU / Mock)
 │   ├── ingestion/                 # Document loaders, cleaners, token chunkers & batched ingest
 │   ├── retrieval/                 # Hybrid vector retriever & keyword scorers
@@ -204,4 +225,3 @@ Run the complete 32-test pytest suite:
 ```
 
 All 32 tests (covering document loading, cleaning, chunking, embedding, vector retrieval, answer generation, citations, memory guards, and high chunk capacity) will execute and pass.
-

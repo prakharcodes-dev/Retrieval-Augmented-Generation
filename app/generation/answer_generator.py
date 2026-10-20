@@ -1,11 +1,13 @@
 import os
 import re
+import random
+import time
 import warnings
 import threading
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
 from app.config.settings import settings
-from app.core.exceptions import GenerationError
+from app.core.exceptions import GenerationError, TransientGenerationError
 from app.core.resource_guard import ResourceGuard
 from app.generation.citation_formatter import CitationFormatter
 
@@ -106,6 +108,7 @@ class CitedAnswer:
     citations: List[Dict[str, Any]] = field(default_factory=list)
     retrieved_chunks: List[Dict[str, Any]] = field(default_factory=list)
     refusal: bool = False
+    model_used: Optional[str] = None
 
 
 class RAGGenerator:
@@ -125,6 +128,15 @@ class RAGGenerator:
     ):
         self.llm_provider = (llm_provider or settings.LLM_PROVIDER).lower()
         self.model_name = model_name or settings.LLM_MODEL
+        self.groq_fallback_model = getattr(settings, "GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b").strip()
+        self._last_model_used = None
+        self.groq_api_key = (getattr(settings, "GROQ_API_KEY", "") or os.getenv("GROQ_API_KEY", "")).strip()
+        if not self.groq_api_key:
+            try:
+                import streamlit as st
+                self.groq_api_key = str(st.secrets.get("GROQ_API_KEY", "") or "").strip()
+            except Exception:
+                pass
 
         # Provider-specific API key resolution
         if api_key:
@@ -132,44 +144,36 @@ class RAGGenerator:
         elif self.llm_provider == "gemini":
             self.api_key = (
                 settings.GEMINI_API_KEY
-                or settings.LLM_API_KEY
                 or os.getenv("GEMINI_API_KEY", "")
-                or os.getenv("LLM_API_KEY", "")
             )
             if not self.api_key:
                 try:
                     import streamlit as st
                     if hasattr(st, "secrets"):
-                        self.api_key = str(st.secrets.get("GEMINI_API_KEY", "") or st.secrets.get("LLM_API_KEY", ""))
+                        self.api_key = str(st.secrets.get("GEMINI_API_KEY", ""))
                 except Exception:
                     pass
-        elif self.llm_provider == "openai":
-            self.api_key = (
-                settings.OPENAI_API_KEY
-                or settings.LLM_API_KEY
-                or os.getenv("OPENAI_API_KEY", "")
-                or os.getenv("LLM_API_KEY", "")
-            )
-            if not self.api_key:
-                try:
-                    import streamlit as st
-                    if hasattr(st, "secrets"):
-                        self.api_key = str(st.secrets.get("OPENAI_API_KEY", "") or st.secrets.get("LLM_API_KEY", ""))
-                except Exception:
-                    pass
+        elif self.llm_provider == "groq":
+            self.api_key = self.groq_api_key
         else:
-            self.api_key = (
-                settings.LLM_API_KEY
-                or settings.GEMINI_API_KEY
-                or settings.OPENAI_API_KEY
-                or os.getenv("LLM_API_KEY", "")
-            )
+            self.api_key = settings.GEMINI_API_KEY
 
         self._gemini_client = None
+        self._gemini_types = None
         if self.llm_provider == "gemini" and self.api_key:
             try:
                 from google import genai
-                self._gemini_client = genai.Client(api_key=self.api_key)
+                from google.genai import types
+                self._gemini_types = types
+                self._gemini_client = genai.Client(
+                    api_key=self.api_key,
+                    http_options=types.HttpOptions(
+                        timeout=30_000,
+                        # The application owns retries below. Disable SDK retries
+                        # to avoid multiplying retry attempts and latency.
+                        retry_options=types.HttpRetryOptions(attempts=1),
+                    ),
+                )
             except ImportError as exc:
                 raise GenerationError("Gemini support requires google-genai.") from exc
 
@@ -365,49 +369,89 @@ class RAGGenerator:
             answer=final_output,
             citations=citations,
             retrieved_chunks=retrieved_chunks,
-            refusal=False
+            refusal=False,
+            model_used=self._last_model_used,
         )
 
     def _sanitize_log(self, text: str) -> str:
         """Sanitizes sensitive tokens, API keys, and private paths from log messages."""
         if not text:
             return ""
-        # Mask OpenAI, Gemini, HF tokens
+        # Mask provider credentials before including diagnostic text in logs.
         text = re.sub(r"sk-[a-zA-Z0-9_-]{10,}", "sk-***MASKED***", text)
         text = re.sub(r"AIzaSy[a-zA-Z0-9_-]{10,}", "AIzaSy***MASKED***", text)
+        text = re.sub(r"gsk_[a-zA-Z0-9_-]{10,}", "gsk_***MASKED***", text)
         text = re.sub(r"hf_[a-zA-Z0-9_-]{10,}", "hf_***MASKED***", text)
         return text
 
     def _call_llm(self, prompt: str) -> str:
-        """Invokes configured LLM provider (gemini, qwen_lora, openai) or local mock."""
+        """Invokes Gemini, Groq, local Qwen, or a local test mock."""
         # 1. Gemini API Provider
         if self.llm_provider == "gemini":
             if (
                 not self.api_key
-                or self.api_key.startswith("your_")
-                or self.api_key == "your-gemini-api-key-here"
+                or any(marker in self.api_key.strip().lower() for marker in ("your_", "your-", "paste-your", "placeholder"))
             ):
                 raise GenerationError(
                     "Gemini API key is not configured. "
                     "Please set GEMINI_API_KEY in Streamlit Secrets or environment variables."
                 )
 
-            try:
-                from google.genai import types
-                response = self._gemini_client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        max_output_tokens=512,
-                        thinking_config=types.ThinkingConfig(thinking_level="low"),
-                    ),
-                )
-                return response.text or ""
-            except Exception as e:
-                sanitized_err = self._sanitize_log(str(e))
-                raise GenerationError(
-                    f"Gemini API generation failed: {sanitized_err}"
-                ) from e
+            for attempt in range(3):
+                try:
+                    return self._generate_with_gemini_model(self.model_name, prompt)
+                except Exception as exc:
+                    if self._is_transient_gemini_error(exc):
+                        if attempt < 2:
+                            delay = min(4.0, 1.0 * (2 ** attempt))
+                            time.sleep(random.uniform(0.0, delay))
+                            continue
+                        if self._is_configured_key(self.groq_api_key):
+                            try:
+                                return self._generate_with_groq(prompt)
+                            except Exception as fallback_exc:
+                                if not self._is_transient_groq_error(fallback_exc):
+                                    code = self._provider_status_code(fallback_exc)
+                                    raise GenerationError(
+                                        "Groq fallback failed with a non-retryable provider error. "
+                                        f"HTTP status: {code if code is not None else 'unknown'}. "
+                                        "Check GROQ_API_KEY and GROQ_FALLBACK_MODEL."
+                                    ) from fallback_exc
+                                code = self._provider_status_code(fallback_exc)
+                                if code is None:
+                                    groq_failure = "Groq could not be reached or timed out. Check internet access and retry."
+                                elif code == 429:
+                                    groq_failure = "Groq rate limit was reached. Wait for the limit to reset, then retry."
+                                else:
+                                    groq_failure = f"Groq returned HTTP {code}. Wait briefly and retry."
+                                raise TransientGenerationError(
+                                    "Gemini and Groq fallback are temporarily unavailable. "
+                                    f"{groq_failure} Your question and document remain in chat."
+                                ) from fallback_exc
+                        code = self._provider_status_code(exc)
+                        reason = "rate limit or quota" if code == 429 else "temporary service/network issue"
+                        fallback_notice = " Add GROQ_API_KEY in local .env or Streamlit Secrets to enable Groq fallback." \
+                            if not self._is_configured_key(self.groq_api_key) else ""
+                        raise TransientGenerationError(
+                            "Gemini is temporarily unavailable ("
+                            f"{reason}; HTTP {code if code is not None else 'network'})."
+                            f"{fallback_notice} Your question and document remain in chat. Wait briefly and retry."
+                        ) from exc
+
+                    code = self._provider_status_code(exc)
+                    if code in (401, 403):
+                        raise GenerationError(
+                            "Gemini rejected GEMINI_API_KEY. Check the key in Streamlit Secrets or local .env."
+                        ) from exc
+                    if code == 404:
+                        raise GenerationError(
+                            f"Gemini model '{self.model_name}' is unavailable to this API key. "
+                            "Check LLM_MODEL and the models enabled for this key."
+                        ) from exc
+                    raise GenerationError(
+                        "Gemini generation failed due to a non-retryable provider error. "
+                        f"HTTP status: {code if code is not None else 'unknown'}."
+                    ) from exc
 
         # 2. Local Qwen LoRA Provider (Only when explicitly selected)
         if self.llm_provider == "qwen_lora":
@@ -418,33 +462,91 @@ class RAGGenerator:
                 print(f"Notice: Qwen LoRA execution issue ({type(e).__name__}). Synthesizing response locally.")
                 return self._mock_llm_response(prompt)
 
-        # 3. OpenAI Provider
-        valid_openai_key = (
-            self.api_key
-            and self.api_key.startswith("sk-")
-            and not self.api_key.startswith("sk-your-actual")
-        )
-
-        if self.llm_provider == "openai":
-            if not valid_openai_key:
-                raise GenerationError(
-                    "OpenAI API key is not configured. Please set OPENAI_API_KEY."
-                )
+        if self.llm_provider == "groq":
+            if not self._is_configured_key(self.groq_api_key):
+                raise GenerationError("Groq API key is not configured. Set GROQ_API_KEY in local .env or Streamlit Secrets.")
             try:
-                from openai import OpenAI
-                client = OpenAI(api_key=self.api_key)
-                response = client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=settings.LLM_TEMPERATURE
-                )
-                return response.choices[0].message.content or ""
-            except Exception as e:
-                sanitized_err = self._sanitize_log(str(e))
-                raise GenerationError(f"OpenAI API call failed: {sanitized_err}") from e
+                return self._generate_with_groq(prompt)
+            except Exception as exc:
+                code = self._provider_status_code(exc)
+                raise GenerationError(
+                    f"Groq generation failed. HTTP status: {code if code is not None else 'network'}. "
+                    "Check GROQ_API_KEY, model access, and network connectivity."
+                ) from exc
 
         # 4. Mock / Local grounded response synthesis (for automated tests)
         return self._mock_llm_response(prompt)
+
+    def _generate_with_gemini_model(self, model: str, prompt: str, fallback: bool = False) -> str:
+        config = {
+            "max_output_tokens": 512,
+            "thinking_config": self._gemini_types.ThinkingConfig(
+                thinking_level="minimal" if fallback else "low"
+            ),
+        }
+        # Gemini Flash-Lite rejects sampling settings such as temperature.
+        if "flash-lite" not in model:
+            config["temperature"] = settings.LLM_TEMPERATURE
+        response = self._gemini_client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=self._gemini_types.GenerateContentConfig(**config),
+        )
+        self._last_model_used = model
+        return response.text or ""
+
+    def _generate_with_groq(self, prompt: str) -> str:
+        from groq import Groq
+
+        client = Groq(api_key=self.groq_api_key, timeout=30.0, max_retries=0)
+        response = client.chat.completions.create(
+            model=self.groq_fallback_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_completion_tokens=512,
+            reasoning_effort="none",
+        )
+        self._last_model_used = f"Groq {self.groq_fallback_model}"
+        return response.choices[0].message.content or ""
+
+    @staticmethod
+    def _is_configured_key(value: str) -> bool:
+        key = (value or "").strip()
+        return bool(key) and not any(
+            marker in key.lower() for marker in ("your_", "your-", "placeholder", "paste-")
+        )
+
+    @classmethod
+    def _is_transient_groq_error(cls, exc: Exception) -> bool:
+        code = cls._provider_status_code(exc)
+        if code in (408, 409, 429, 500, 502, 503, 504):
+            return True
+        return type(exc).__name__ in {
+            "APIConnectionError", "APITimeoutError", "RateLimitError", "InternalServerError",
+            "Timeout", "TimeoutError", "ConnectError", "ReadError", "WriteError",
+        }
+
+    @staticmethod
+    def _provider_status_code(exc: Exception) -> Optional[int]:
+        code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+        try:
+            return int(code) if code is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _is_transient_gemini_error(cls, exc: Exception) -> bool:
+        code = cls._provider_status_code(exc)
+        if code in (408, 429, 500, 502, 503, 504):
+            return True
+        # Google GenAI can surface transport errors from httpx/httpcore or
+        # requests. Match known transient exception types without importing
+        # optional transport packages at module load time.
+        transient_names = {
+            "Timeout", "TimeoutException", "ConnectTimeout", "ReadTimeout",
+            "WriteTimeout", "PoolTimeout", "ConnectError", "ReadError", "WriteError",
+            "NetworkError", "ConnectionError", "RemoteProtocolError",
+        }
+        return type(exc).__name__ in transient_names
 
     def _call_qwen_lora(self, prompt: str) -> str:
         """Executes inference on fine-tuned Qwen 2.5 3B + LoRA adapter."""
@@ -688,4 +790,3 @@ class RAGGenerator:
 
 # Alias for backward compatibility
 AnswerGenerator = RAGGenerator
-

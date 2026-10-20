@@ -58,7 +58,10 @@ def main():
         vector_store = get_vector_store()
     except Exception as exc:
         st.error(f"Cannot initialize document search: {exc}")
-        st.info("Add GEMINI_API_KEY or OPENAI_API_KEY to Streamlit Secrets, then restart the app.")
+        st.info(
+            "Configure a valid GEMINI_API_KEY for Gemini embeddings in local .env or Streamlit Secrets. If the error reports a "
+            "vector dimension mismatch, back up the vectorstore and run the documented migration."
+        )
         st.stop()
     retriever = VectorRetriever(vector_store=vector_store)
 
@@ -180,6 +183,12 @@ def main():
                 with st.expander("🛠️ Debug: Retrieved Chunks"):
                     st.json(message["chunks"])
 
+    retry_prompt = getattr(st.session_state, "retry_prompt", None)
+    if retry_prompt and st.button("↻ Retry the last question", key="retry_last_question"):
+        st.session_state.pending_prompt = retry_prompt
+        st.session_state.retry_prompt = None
+        st.rerun()
+
     prompt = st.chat_input("Ask a question about your documents...")
     if getattr(st.session_state, "pending_prompt", None):
         prompt = st.session_state.pending_prompt
@@ -208,6 +217,8 @@ def main():
                         result = generator.generate(prompt, retrieved)
 
                         st.markdown(result.answer)
+                        if result.model_used and result.model_used != generator.model_name:
+                            st.caption(f"Fallback model used: {result.model_used}")
 
                         if result.citations:
                             with st.expander("📚 View Sources & Citations"):
@@ -224,12 +235,16 @@ def main():
                             "sources": result.citations,
                             "chunks": result.retrieved_chunks
                         })
+                        st.session_state.retry_prompt = None
 
                         st.session_state.app_state = OperationState.READY
 
                     except Exception as e:
                         st.session_state.app_state = OperationState.RECOVERING
+                        from app.core.exceptions import TransientGenerationError
                         err_msg = f"An error occurred while generating response: {str(e)}"
+                        if isinstance(e, TransientGenerationError):
+                            st.session_state.retry_prompt = prompt
                         st.error(err_msg)
                         st.session_state.messages.append({"role": "assistant", "content": err_msg})
                         ResourceGuard.collect_garbage()

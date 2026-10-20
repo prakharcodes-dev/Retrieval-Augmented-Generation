@@ -28,7 +28,7 @@ class ChunkingError(ValueError, RAGException):
     pass
 
 
-class EmbeddingError(RAGException):
+class EmbeddingError(RuntimeError, RAGException):
     """Raised when vector embedding generation fails."""
     pass
 
@@ -45,4 +45,9 @@ class RetrievalError(RAGException):
 
 class GenerationError(RAGException):
     """Raised when LLM answer generation fails."""
+    pass
+
+
+class TransientGenerationError(GenerationError):
+    """Raised when generation failed for a temporary provider or network issue."""
     pass

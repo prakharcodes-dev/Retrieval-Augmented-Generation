@@ -15,6 +15,7 @@ from app.core.exceptions import (
     ResourceUnsafeError,
     PDFValidationError,
     PDFExtractionError,
+    EmbeddingError,
 )
 from app.core.resource_guard import ResourceGuard
 from app.core.state import OperationState, StateTracker
@@ -142,15 +143,15 @@ def test_resource_guard_ram_check():
         ResourceGuard.check_memory(min_available_mb=99999999.0, context="test_guard")
 
 
-def test_failed_embedding_does_not_silently_fallback(monkeypatch):
+def test_failed_gemini_embedding_does_not_silently_fallback(monkeypatch):
     """Provider errors must be visible; mock vectors produce misleading retrieval results."""
-    service = EmbeddingService(provider="openai", api_key="sk-invalid-key-test")
+    service = EmbeddingService(provider="gemini", api_key="test-gemini-key")
 
-    def fail_embedding_request(**kwargs):
-        raise ValueError("simulated provider failure")
+    def fail_embedding_request(texts):
+        raise RuntimeError("simulated provider failure")
 
-    monkeypatch.setattr(service.client.embeddings, "create", fail_embedding_request)
-    with pytest.raises(RuntimeError, match="OpenAI embedding request failed"):
+    monkeypatch.setattr(service, "_gemini_embed_batch", fail_embedding_request)
+    with pytest.raises(EmbeddingError, match="Gemini embedding request failed"):
         service.embed_documents(["Test sentence with provider failure."])
 
 
@@ -267,10 +268,9 @@ def test_vector_store_metadata_sanitization_and_isolation(tmp_path):
 def test_sensitive_data_log_masking():
     """Verifies RAGGenerator masks sensitive API keys and tokens in log outputs (Fixes Sensitive Data Exposure)."""
     generator = RAGGenerator()
-    sensitive_text = "OpenAI key sk-proj1234567890abcdef and Gemini key AIzaSy1234567890abcdef failed"
+    sensitive_text = "Groq key gsk_test1234567890abcdef and Gemini key AIzaSy1234567890abcdef failed"
     masked = generator._sanitize_log(sensitive_text)
 
-    assert "sk-proj1234567890abcdef" not in masked
     assert "AIzaSy1234567890abcdef" not in masked
-    assert "sk-***MASKED***" in masked
     assert "AIzaSy***MASKED***" in masked
+    assert "gsk_***MASKED***" in masked

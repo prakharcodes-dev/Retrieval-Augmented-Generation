@@ -43,8 +43,23 @@ class ChromaVectorStore(BaseVectorStore):
                 embedding_function=self.embedding_service,
                 metadata={"hnsw:space": "cosine"}
             )
+            expected_dimension = getattr(self.embedding_service, "embedding_dimension", None)
+            if expected_dimension and self.collection.count():
+                sample = self.collection.get(limit=1, include=["embeddings"])
+                stored = (sample.get("embeddings") if sample else None)
+                if stored is not None and len(stored):
+                    actual_dimension = len(stored[0])
+                    if actual_dimension != expected_dimension:
+                        raise VectorStoreError(
+                            f"The existing '{self.collection_name}' index uses {actual_dimension}-dimensional "
+                            f"vectors, but provider '{self.embedding_service.provider}' produces "
+                            f"{expected_dimension}. Search and indexing are stopped to prevent mixing vectors. "
+                            "Back up the index and run the documented embedding migration."
+                        )
+        except VectorStoreError:
+            raise
         except Exception as e:
-            raise VectorStoreError(f"Failed to initialize ChromaDB store: {e}") from e
+            raise VectorStoreError("Failed to initialize ChromaDB store. Check the local index and provider configuration.") from e
 
     def _sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         """

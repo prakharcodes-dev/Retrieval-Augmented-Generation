@@ -2,12 +2,13 @@ import hashlib
 from typing import List, Optional, Any
 from chromadb.api.types import EmbeddingFunction, Documents, Embeddings
 from app.config.settings import settings
+from app.core.exceptions import EmbeddingError
 
 
 class EmbeddingService(EmbeddingFunction):
     """
     Dedicated Embedding Service providing consistent vector embeddings for document chunks and queries.
-    Configurable via settings or direct parameters (supports OpenAI, SentenceTransformers, and Mock providers).
+    Configurable via settings or direct parameters (supports Gemini, SentenceTransformers, and Mock providers).
     """
 
     def __init__(
@@ -17,63 +18,55 @@ class EmbeddingService(EmbeddingFunction):
         api_key: Optional[str] = None
     ):
         self.provider = (provider or settings.EMBEDDING_PROVIDER).lower()
-        self.model_name = model_name or settings.EMBEDDING_MODEL
-        self.api_key = api_key or settings.EMBEDDING_API_KEY or settings.OPENAI_API_KEY
+        self.model_name = (model_name or settings.EMBEDDING_MODEL).strip()
+        configured_gemini = (settings.GEMINI_API_KEY or "").strip()
+        self.api_key = (api_key or configured_gemini).strip()
         self._st_model = None
 
         if self.provider == "auto":
-            valid_openai_key = (
-                self.api_key
-                and self.api_key.startswith("sk-")
-                and not self.api_key.startswith("sk-your-actual")
-            )
-            if valid_openai_key:
-                self.provider = "openai"
-            elif settings.GEMINI_API_KEY or settings.LLM_API_KEY:
-                self.provider = "gemini"
-                self.api_key = settings.GEMINI_API_KEY or settings.LLM_API_KEY
-            else:
-                raise ValueError("No embedding API key is configured. Set OPENAI_API_KEY or GEMINI_API_KEY in Streamlit secrets.")
+            self.provider = "gemini"
 
         if self.provider == "gemini":
-            self.api_key = self.api_key or settings.GEMINI_API_KEY or settings.LLM_API_KEY
-            if not self.api_key:
-                raise ValueError("Gemini embeddings require GEMINI_API_KEY in Streamlit secrets.")
-            # The configured model name is OpenAI's default; use Gemini's actual model ID.
+            if not self.api_key or self._is_placeholder_key(self.api_key):
+                raise EmbeddingError(
+                    "Gemini embeddings require GEMINI_API_KEY. Set it in local .env or Streamlit Secrets."
+                )
             self.model_name = "gemini-embedding-001"
+            self.embedding_dimension = 768
             try:
                 from google import genai
                 from google.genai import types
-                self._genai = genai.Client(api_key=self.api_key)
+                self._genai = genai.Client(
+                    api_key=self.api_key,
+                    http_options=types.HttpOptions(
+                        timeout=30_000,
+                        retry_options=types.HttpRetryOptions(attempts=1),
+                    ),
+                )
                 self._genai_types = types
             except ImportError as exc:
                 raise RuntimeError("Gemini embedding support requires google-genai.") from exc
+            except Exception as exc:
+                raise RuntimeError("Gemini embedding client could not be initialized. Check SDK installation and configuration.") from exc
             return
 
-        valid_openai_key = (
-            self.api_key
-            and self.api_key.startswith("sk-")
-            and not self.api_key.startswith("sk-your-actual")
-        )
-
-        if self.provider == "openai" and valid_openai_key:
-            try:
-                from openai import OpenAI
-                self.client = OpenAI(api_key=self.api_key)
-            except Exception as e:
-                raise RuntimeError("OpenAI embedding client could not be initialized.") from e
-        elif self.provider == "openai":
-            raise ValueError("OpenAI embeddings require a valid OPENAI_API_KEY.")
-        elif self.provider == "sentence-transformers":
+        if self.provider == "sentence-transformers":
             try:
                 from sentence_transformers import SentenceTransformer
                 self._st_model = SentenceTransformer(self.model_name or "all-MiniLM-L6-v2")
+                self.embedding_dimension = self._st_model.get_sentence_embedding_dimension()
             except Exception as exc:
                 raise RuntimeError("SentenceTransformer embedding model could not be loaded.") from exc
-        elif self.provider not in ("openai", "sentence-transformers", "mock"):
+        elif self.provider not in ("sentence-transformers", "mock"):
             raise ValueError(f"Unsupported embedding provider: {self.provider}")
         else:
             self.provider = "mock"
+            self.embedding_dimension = 384
+
+    @staticmethod
+    def _is_placeholder_key(value: str) -> bool:
+        normalized = value.strip().lower()
+        return any(marker in normalized for marker in ("your-", "your_", "paste-your", "placeholder"))
 
     def __call__(self, input: Documents) -> Embeddings:
         """ChromaDB EmbeddingFunction signature compatibility."""
@@ -84,21 +77,16 @@ class EmbeddingService(EmbeddingFunction):
         if not texts:
             return []
 
-        if self.provider == "openai" and hasattr(self, "client"):
-            try:
-                response = self.client.embeddings.create(
-                    input=texts,
-                    model=self.model_name
-                )
-                return [data.embedding for data in response.data]
-            except Exception as e:
-                raise RuntimeError(f"OpenAI embedding request failed: {e}") from e
-
         if self.provider == "gemini":
             vectors: List[List[float]] = []
             # Keep remote embedding calls bounded while embedding chunks in batches.
             for start in range(0, len(texts), 64):
-                vectors.extend(self._gemini_embed_batch(texts[start:start + 64]))
+                try:
+                    vectors.extend(self._gemini_embed_batch(texts[start:start + 64]))
+                except EmbeddingError:
+                    raise
+                except Exception as exc:
+                    raise self._embedding_error("Gemini", exc) from exc
             return vectors
 
         elif self.provider == "sentence-transformers" and self._st_model:
@@ -140,7 +128,7 @@ class EmbeddingService(EmbeddingFunction):
             )
             return result.embeddings[0].values
         except Exception as exc:
-            raise RuntimeError(f"Gemini embedding request failed: {exc}") from exc
+            raise self._embedding_error("Gemini", exc) from exc
 
     def _gemini_embed_batch(self, texts: List[str]) -> List[List[float]]:
         try:
@@ -157,7 +145,20 @@ class EmbeddingService(EmbeddingFunction):
                 raise ValueError("Gemini returned a different number of vectors than input texts.")
             return embeddings
         except Exception as exc:
-            raise RuntimeError(f"Gemini batch embedding request failed: {exc}") from exc
+            raise self._embedding_error("Gemini", exc) from exc
+
+    @staticmethod
+    def _embedding_error(provider: str, exc: Exception) -> EmbeddingError:
+        code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+        if code in (401, 403):
+            message = f"{provider} rejected the configured API key. Check that the key is valid and enabled for embeddings."
+        elif code == 429:
+            message = f"{provider} embedding quota or rate limit was reached. Wait and retry."
+        elif code == 503:
+            message = f"{provider} embeddings are temporarily unavailable. Wait and retry."
+        else:
+            message = f"{provider} embedding request failed. Check provider configuration and network connectivity."
+        return EmbeddingError(message)
 
     @staticmethod
     def name() -> str:

@@ -29,7 +29,7 @@ class RAGGenerator:
     ):
         self.llm_provider = (llm_provider or settings.LLM_PROVIDER).lower()
         self.model_name = model_name or settings.LLM_MODEL
-        self.api_key = api_key or settings.OPENAI_API_KEY or settings.GEMINI_API_KEY
+        self.api_key = api_key or settings.GEMINI_API_KEY or settings.GROQ_API_KEY
         self.prompt_template = prompt_template or settings.get_prompt_template()
 
     def format_context(self, chunks: List[Dict[str, Any]]) -> str:
@@ -122,23 +122,20 @@ class RAGGenerator:
 
     def _call_llm(self, prompt: str) -> str:
         """Invokes the selected LLM provider API with key validation."""
-        valid_openai_key = self.api_key and self.api_key.startswith("sk-") and not self.api_key.startswith("sk-your-actual")
         valid_gemini_key = self.api_key and not self.api_key.startswith("your_")
 
-        if self.llm_provider == "openai" and valid_openai_key:
+        if self.llm_provider == "groq" and self.api_key:
             try:
-                from openai import OpenAI
-                client = OpenAI(api_key=self.api_key)
+                from groq import Groq
+                client = Groq(api_key=self.api_key, timeout=30.0, max_retries=0)
                 response = client.chat.completions.create(
                     model=self.model_name,
-                    messages=[
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.0
+                    messages=[{"role": "user", "content": prompt}],
+                    max_completion_tokens=512,
                 )
                 return response.choices[0].message.content or ""
             except Exception as e:
-                print(f"Notice: OpenAI API call failed ({e}). Synthesizing grounded response locally.")
+                print(f"Notice: Groq API call failed ({type(e).__name__}).")
 
         elif self.llm_provider == "gemini" and valid_gemini_key:
             try:

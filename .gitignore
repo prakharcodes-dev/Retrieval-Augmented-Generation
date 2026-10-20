@@ -28,8 +28,10 @@ ENV/
 
 # RAG App & Data Storage
 /vectorstore/
+/vectorstore_backup_*/
 /data/uploads/
 .env
+/.streamlit/secrets.toml
 
 # IDEs & System
 .vscode/
