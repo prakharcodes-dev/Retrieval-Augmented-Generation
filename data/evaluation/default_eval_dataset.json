@@ -1,0 +1,260 @@
+{
+  "name": "RAG Document Assistant Benchmark Dataset",
+  "version": "1.0",
+  "description": "Standard benchmark test dataset for evaluating RAG retrieval and answer generation performance.",
+  "samples": [
+    {
+      "id": "eval_001",
+      "question": "Who published the official travel and heritage tourism guide?",
+      "expected_answer": "The Ministry of Tourism, Government of India published the official travel and heritage tourism guide.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Published by: Ministry of Tourism, Government of India",
+        "Ministry of Tourism"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_002",
+      "question": "What historical monuments and destinations are highlighted in the travel guide?",
+      "expected_answer": "Destinations include Tirumala Nayak Palace, Golden Temple, Taj Mahal, and South India Temple circuits.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Tirumala Nayak Palace, Golden Temple, Taj Mahal, and South India Temple circuits"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_003",
+      "question": "What itineraries and recommendations does the official guide provide?",
+      "expected_answer": "The guide provides detailed itineraries, transport recommendations, and historical monument guides.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "detailed itineraries, transport recommendations, and historical monument guides"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_004",
+      "question": "Which palace in South India is included in the travel destinations?",
+      "expected_answer": "Tirumala Nayak Palace is included in the travel destinations.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Tirumala Nayak Palace"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_005",
+      "question": "Is the Golden Temple listed as a destination in the guide?",
+      "expected_answer": "Yes, the Golden Temple is explicitly listed as one of the highlighted destinations.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Golden Temple"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_006",
+      "question": "What temple circuits are recommended for foreign tourists?",
+      "expected_answer": "South India Temple circuits are recommended for foreign tourists.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "South India Temple circuits"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_007",
+      "question": "Who is the primary target audience for the travel guide?",
+      "expected_answer": "Foreign tourists visiting India are the primary target audience.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Discover India Tours for Foreign Tourists visiting India"
+      ],
+      "category": "definition"
+    },
+    {
+      "id": "eval_008",
+      "question": "Does the guide cover the Taj Mahal?",
+      "expected_answer": "Yes, the Taj Mahal is covered as one of the destinations in the guide.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Taj Mahal"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_009",
+      "question": "What transport guidance is mentioned in the travel guide?",
+      "expected_answer": "The guide provides transport recommendations for tourists.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "transport recommendations"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_010",
+      "question": "Summarize the main purpose of the Discover India travel guide.",
+      "expected_answer": "It is an official travel and heritage tourism guide from the Ministry of Tourism providing itineraries, transport advice, and monument guides for visiting tourists.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Official Travel and Heritage Tourism Guide",
+        "detailed itineraries, transport recommendations"
+      ],
+      "category": "overview"
+    },
+    {
+      "id": "eval_011",
+      "question": "What government ministry is responsible for the travel publication?",
+      "expected_answer": "The Ministry of Tourism, Government of India is responsible.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Ministry of Tourism, Government of India"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_012",
+      "question": "What specific type of tourism is featured in the guide's subtitle?",
+      "expected_answer": "Heritage Tourism is specifically featured in the subtitle.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Official Travel and Heritage Tourism Guide"
+      ],
+      "category": "definition"
+    },
+    {
+      "id": "eval_013",
+      "question": "What is the exact document title of the official tourism guide?",
+      "expected_answer": "Discover India Tours for Foreign Tourists visiting India.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Discover India Tours for Foreign Tourists visiting India"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_014",
+      "question": "Are flight ticket prices and airline baggage rules specified in the guide?",
+      "expected_answer": "I couldn't find sufficient evidence in the provided documents to answer that question.",
+      "relevant_docs": [],
+      "expected_context_snippets": [],
+      "category": "negative_control"
+    },
+    {
+      "id": "eval_015",
+      "question": "What emergency contact phone number is provided for the Ministry of Tourism?",
+      "expected_answer": "I couldn't find sufficient evidence in the provided documents to answer that question.",
+      "relevant_docs": [],
+      "expected_context_snippets": [],
+      "category": "negative_control"
+    },
+    {
+      "id": "eval_016",
+      "question": "How do the destinations combine Northern and Southern Indian heritage?",
+      "expected_answer": "The guide pairs Northern Indian sites like the Golden Temple and Taj Mahal with Southern Indian sites like Tirumala Nayak Palace and South India Temple circuits.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Tirumala Nayak Palace",
+        "Golden Temple",
+        "Taj Mahal",
+        "South India Temple circuits"
+      ],
+      "category": "comparison"
+    },
+    {
+      "id": "eval_017",
+      "question": "List all specific landmarks mentioned in the official tourism guide.",
+      "expected_answer": "Tirumala Nayak Palace, Golden Temple, Taj Mahal, and South India Temple circuits.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Tirumala Nayak Palace, Golden Temple, Taj Mahal, and South India Temple circuits"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_018",
+      "question": "Where can tourists find historical monument guides according to the document?",
+      "expected_answer": "In the official guide published by the Ministry of Tourism, Government of India.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "historical monument guides",
+        "Ministry of Tourism"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_019",
+      "question": "What kind of itineraries does the Ministry of Tourism offer?",
+      "expected_answer": "Detailed itineraries are offered.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "detailed itineraries"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_020",
+      "question": "Is Tirumala Nayak Palace featured in Discover India Tours?",
+      "expected_answer": "Yes, Tirumala Nayak Palace is featured as one of the highlighted destinations.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Tirumala Nayak Palace"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_021",
+      "question": "What official entities are credited with authoring or publishing this material?",
+      "expected_answer": "Ministry of Tourism, Government of India.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Ministry of Tourism, Government of India"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_022",
+      "question": "Does the travel guide provide recommendations for local transit and transport?",
+      "expected_answer": "Yes, it provides transport recommendations.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "transport recommendations"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_023",
+      "question": "Which historic monument in the guide is a world-renowned mausoleum?",
+      "expected_answer": "The Taj Mahal is included among the destinations.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Taj Mahal"
+      ],
+      "category": "factual"
+    },
+    {
+      "id": "eval_024",
+      "question": "What is the visa application fee according to this document?",
+      "expected_answer": "I couldn't find sufficient evidence in the provided documents to answer that question.",
+      "relevant_docs": [],
+      "expected_context_snippets": [],
+      "category": "negative_control"
+    },
+    {
+      "id": "eval_025",
+      "question": "Provide an overview of the geographical regions represented in the guide's destinations.",
+      "expected_answer": "The guide represents Northern landmarks such as the Golden Temple and Taj Mahal along with Southern heritage such as the Tirumala Nayak Palace and South India Temple circuits.",
+      "relevant_docs": ["sample_travel_guide.pdf"],
+      "expected_context_snippets": [
+        "Tirumala Nayak Palace",
+        "Golden Temple",
+        "Taj Mahal",
+        "South India Temple circuits"
+      ],
+      "category": "overview"
+    }
+  ]
+}

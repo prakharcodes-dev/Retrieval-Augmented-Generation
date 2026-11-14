@@ -25,6 +25,7 @@ from app.ingestion.chunker import TextChunker, Chunk
 from app.ingestion.ingest import ingest_documents
 from app.ingestion.loader import DocumentLoader, safe_pymupdf_open
 from app.vectorstore.chroma_store import ChromaVectorStore
+from app.retrieval.bm25_index import BM25Index
 
 
 def create_synthetic_pdf(path: Path, num_pages: int = 10, words_per_page: int = 300) -> Path:
@@ -68,6 +69,40 @@ def test_normal_pdf_ingestion(tmp_path):
     assert res["pages_processed"] == 5
     assert res["chunks_stored"] > 0
     assert store.get_count() == res["chunks_stored"]
+
+
+def test_partial_ingestion_rolls_back_and_retry_completes(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "retry.pdf"
+    create_synthetic_pdf(pdf_path, num_pages=12, words_per_page=300)
+    store = ChromaVectorStore(
+        persist_directory=str(tmp_path / "retry_store"),
+        collection_name="retry_collection",
+        embedding_service=EmbeddingService(provider="mock"),
+    )
+    sparse = BM25Index(tmp_path / "retry_store" / "bm25.sqlite3")
+    original_add = store.add_chunks
+    calls = {"count": 0}
+
+    def fail_after_first_batch(chunks, batch_size=100):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("simulated second-batch failure")
+        return original_add(chunks, batch_size=batch_size)
+
+    monkeypatch.setattr(store, "add_chunks", fail_after_first_batch)
+    failed = ingest_documents(pdf_path, vector_store=store, sparse_index=sparse, batch_size=5)
+    assert failed["status"] == "error"
+    assert store.get_count() == 0
+    assert sparse.count() == 0
+    document = DocumentLoader().validate_file(pdf_path)
+    assert sparse.get_status(document["document_id"])["status"] == "failed"
+
+    monkeypatch.setattr(store, "add_chunks", original_add)
+    retried = ingest_documents(pdf_path, vector_store=store, sparse_index=sparse, batch_size=5)
+    assert retried["status"] == "success"
+    assert store.get_count() == sparse.count() > 0
+    assert sparse.get_status(document["document_id"])["status"] == "completed"
+    assert ingest_documents(pdf_path, vector_store=store, sparse_index=sparse)["status"] == "skipped"
 
 
 def test_corrupted_pdf_handling(tmp_path):
