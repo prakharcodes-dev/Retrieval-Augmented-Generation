@@ -5,6 +5,7 @@ incremental batch persistence, transaction failure isolation, and metadata autho
 
 import os
 import logging
+from typing import Iterator
 from typing import List, Dict, Any, Optional, Set
 import chromadb
 
@@ -186,7 +187,45 @@ class ChromaVectorStore(BaseVectorStore):
 
         return formatted_results
 
-    def delete_document(self, document_id: str, file_hash: Optional[str] = None) -> int:
+    def iter_chunks(self, batch_size: int = 200):
+        """Yield stored records page-by-page without materializing the collection."""
+        offset = 0
+        total = self.get_count()
+        while offset < total:
+            batch = self.collection.get(
+                limit=batch_size,
+                offset=offset,
+                include=["documents", "metadatas"],
+            )
+            ids = batch.get("ids", [])
+            if not ids:
+                break
+            documents = batch.get("documents") or [""] * len(ids)
+            metadatas = batch.get("metadatas") or [{}] * len(ids)
+            for chunk_id, document, metadata in zip(ids, documents, metadatas):
+                yield {
+                    "chunk_id": chunk_id,
+                    "text": document or "",
+                    "metadata": metadata or {},
+                    "document_id": (metadata or {}).get("document_id", ""),
+                    "source": (metadata or {}).get("source", ""),
+                    "page_number": (metadata or {}).get("page_number"),
+                }
+            offset += len(ids)
+
+    def iter_chunk_ids(self, batch_size: int = 1000):
+        """Yield only IDs for bounded low-memory cross-index consistency checks."""
+        offset = 0
+        total = self.get_count()
+        while offset < total:
+            batch = self.collection.get(limit=batch_size, offset=offset, include=[])
+            ids = batch.get("ids", [])
+            if not ids:
+                break
+            yield from ids
+            offset += len(ids)
+
+    def delete_document(self, document_id: str, file_hash: Optional[str] = None) -> bool:
         """
         Safely deletes document chunks belonging strictly to the specified document_id / file_hash (CWE-862).
         Enforces document-level isolation instead of wiping the entire database.

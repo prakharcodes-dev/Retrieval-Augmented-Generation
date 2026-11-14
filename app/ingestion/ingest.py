@@ -33,7 +33,8 @@ def ingest_documents(
     path: str | Path,
     vector_store: Optional["ChromaVectorStore"] = None,
     reset: bool = False,
-    batch_size: int = 20
+    batch_size: int = 20,
+    sparse_index: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Ingests documents into vector store using streaming page-batch processing.
@@ -41,6 +42,8 @@ def ingest_documents(
     """
     tracker = StateTracker(OperationState.VALIDATING)
     target = Path(path)
+    import time
+    t_start = time.perf_counter()
 
     if not target.exists():
         tracker.transition_to(OperationState.RECOVERING, error=f"Ingestion path does not exist: {target}")
@@ -51,8 +54,13 @@ def ingest_documents(
     from app.vectorstore.chroma_store import ChromaVectorStore
     try:
         store = vector_store or ChromaVectorStore()
+        if sparse_index is None:
+            from app.retrieval.bm25_index import BM25Index
+            sparse_index = BM25Index(Path(store.persist_directory) / "bm25.sqlite3")
+        sparse_index.sync_from_store(store)
         if reset:
             store.reset()
+            sparse_index.reset()
     except Exception as e:
         tracker.transition_to(OperationState.RECOVERING, error=f"Vector store initialization failed: {e}")
         ResourceGuard.collect_garbage()
@@ -98,8 +106,16 @@ def ingest_documents(
         try:
             val_info = loader.validate_file(f)
             if not reset and store.has_file_hash(val_info["file_hash"]):
-                logger.info(f"File '{f.name}' already ingested. Skipping.")
-                continue
+                status = sparse_index.get_status(val_info["document_id"])
+                # Collections created before lifecycle tracking are treated as
+                # complete for backward compatibility. New failed runs retry.
+                if status is None or status["status"] == "completed":
+                    if status is None:
+                        sparse_index.set_status(
+                            val_info["document_id"], val_info["file_hash"], f.name, "completed"
+                        )
+                    logger.info("Skipping already completed document hash=%s", val_info["file_hash"][:12])
+                    continue
             new_files.append(f)
         except Exception as e:
             if target.is_file():
@@ -134,10 +150,19 @@ def ingest_documents(
     total_pages_processed = 0
     total_chunks_stored = 0
     chunk_counters: Dict[str, int] = {}
+    current_doc: Optional[Dict[str, Any]] = None
 
     try:
         for file_path in new_files:
             val_info = loader.validate_file(file_path)
+            current_doc = val_info
+            doc_id = val_info["document_id"]
+            # Remove orphaned partial records from an interrupted/failed prior
+            # run before retrying the deterministic document/chunk IDs.
+            store.delete_document(document_id=doc_id)
+            sparse_index.delete_document(doc_id)
+            sparse_index.set_status(doc_id, val_info["file_hash"], val_info["filename"], "pending")
+            sparse_index.set_status(doc_id, val_info["file_hash"], val_info["filename"], "processing")
             file_ext = val_info["file_type"]
 
             if file_ext == "pdf":
@@ -168,7 +193,13 @@ def ingest_documents(
                     if batch_chunks:
                         # Add chunks to vector store incrementally
                         added = store.add_chunks(batch_chunks)
+                        sparse_index.upsert_chunks(batch_chunks)
                         total_chunks_stored += added
+                    sparse_index.set_status(
+                        doc_id, val_info["file_hash"], val_info["filename"], "processing",
+                        processed_pages=total_pages_processed,
+                        processed_chunks=total_chunks_stored,
+                    )
 
                     # Release batch memory
                     page_batch.clear()
@@ -188,9 +219,34 @@ def ingest_documents(
                     )
                     if batch_chunks:
                         added = store.add_chunks(batch_chunks)
+                        sparse_index.upsert_chunks(batch_chunks)
                         total_chunks_stored += added
+                    sparse_index.set_status(
+                        doc_id, val_info["file_hash"], val_info["filename"], "processing",
+                        processed_pages=total_pages_processed,
+                        processed_chunks=total_chunks_stored,
+                    )
 
             total_files_processed += 1
+            sparse_index.set_status(
+                doc_id, val_info["file_hash"], val_info["filename"], "completed",
+                processed_pages=total_pages_processed,
+                processed_chunks=total_chunks_stored,
+            )
+            current_doc = None
+
+        duration_sec = time.perf_counter() - t_start
+        try:
+            from app.core.performance_tracker import performance_tracker
+            performance_tracker.record_ingestion(
+                filename=target.name,
+                file_size_bytes=target.stat().st_size if target.is_file() else 0,
+                total_pages=total_pages_processed,
+                chunks_stored=total_chunks_stored,
+                duration_seconds=duration_sec,
+            )
+        except Exception:
+            pass
 
         tracker.transition_to(OperationState.READY)
         return {
@@ -199,18 +255,39 @@ def ingest_documents(
             "files_processed": total_files_processed,
             "pages_processed": total_pages_processed,
             "chunks_stored": total_chunks_stored,
+            "duration_seconds": round(duration_sec, 3),
             "total_chunks_in_db": store.get_count()
         }
 
     except Exception as e:
         logger.error(f"Ingestion pipeline failure: {e}")
+        if current_doc is not None:
+            doc_id = current_doc["document_id"]
+            cleanup_error = ""
+            try:
+                store.delete_document(document_id=doc_id)
+                sparse_index.delete_document(doc_id)
+            except Exception as rollback_exc:
+                cleanup_error = f" Rollback also failed: {type(rollback_exc).__name__}."
+                logger.exception("Failed to roll back partial document indexing.")
+            try:
+                sparse_index.set_status(
+                    doc_id, current_doc["file_hash"], current_doc["filename"], "failed",
+                    processed_pages=total_pages_processed,
+                    processed_chunks=total_chunks_stored,
+                    error=type(e).__name__,
+                )
+            except Exception:
+                logger.exception("Could not persist failed ingestion state.")
+        else:
+            cleanup_error = ""
         tracker.transition_to(OperationState.RECOVERING, error=str(e))
         ResourceGuard.collect_garbage()
         tracker.transition_to(OperationState.READY)
 
         return {
             "status": "error",
-            "error": f"Ingestion failed safely: {str(e)}",
+            "error": f"Ingestion failed safely: {str(e)}{cleanup_error}",
             "files_processed": total_files_processed,
             "pages_processed": total_pages_processed,
             "chunks_stored": total_chunks_stored,

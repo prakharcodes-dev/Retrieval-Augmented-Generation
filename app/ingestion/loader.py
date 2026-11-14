@@ -95,22 +95,29 @@ class DocumentLoader:
         if ext not in (".pdf", ".txt", ".md", ".text"):
             raise ValueError(f"Unsupported file type '{ext}'. Supported formats: .pdf, .txt, .md")
 
-        file_hash = self.compute_file_hash(path)
-        doc_id = f"doc_{file_hash[:12]}"
-        total_pages = 1
+        # Read buffer to run full structural validation
+        raw_bytes = path.read_bytes()
+        from app.ingestion.validator import DocumentValidator
+        val_res = DocumentValidator.validate_upload(raw_bytes, path.name)
+        if not val_res.is_valid:
+            if val_res.file_extension not in (".pdf", ".txt", ".md", ".text"):
+                raise ValueError(f"Unsupported file type '{val_res.file_extension}'. Supported formats: .pdf, .txt, .md")
+            raise PDFValidationError(val_res.error_message or f"Validation failed for '{path.name}'.")
 
-        if ext == ".pdf":
-            total_pages = self._validate_pdf(path)
+        file_hash = val_res.file_hash
+        doc_id = f"doc_{file_hash[:12]}"
+        total_pages = val_res.total_pages
 
         return {
             "path": path,
-            "filename": path.name,
+            "filename": val_res.sanitized_filename,
             "file_type": ext.lstrip("."),
             "file_hash": file_hash,
             "document_id": doc_id,
             "file_size_bytes": file_bytes,
             "total_pages": total_pages,
             "title": path.stem.replace("_", " ").replace("-", " ").title(),
+            "warnings": val_res.warnings,
         }
 
     def _validate_pdf(self, path: Path) -> int:

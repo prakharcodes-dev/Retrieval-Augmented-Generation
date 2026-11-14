@@ -14,12 +14,11 @@ from app.vectorstore.chroma_store import ChromaVectorStore
 def main():
     parser = argparse.ArgumentParser(description="Document Ingestion Pipeline")
     parser.add_argument("--path", "-p", required=True, help="Path to PDF/TXT file or directory")
-    parser.add_argument("--reset", "-r", action="store_true", help="Reset vector store before ingesting")
     args = parser.parse_args()
 
     start_time = time.perf_counter()
     store = ChromaVectorStore()
-    result = ingest_documents(path=args.path, vector_store=store, reset=args.reset)
+    result = ingest_documents(path=args.path, vector_store=store, reset=False)
     elapsed = time.perf_counter() - start_time
 
     print(f"\n--- Ingestion Results ---")

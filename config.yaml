@@ -4,6 +4,10 @@ chunking:
 
 retrieval:
   vector_top_k: 4
+  dense_candidate_k: 20
+  sparse_candidate_k: 20
+  fusion: rrf
+  rrf_k: 60
 
 vector_store:
   provider: chroma

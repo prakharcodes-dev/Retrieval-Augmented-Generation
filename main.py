@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import threading
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -14,12 +15,27 @@ from app.ingestion import ingest_documents
 from app.retrieval import ChromaVectorStore, VectorRetriever
 from app.generation import RAGGenerator, CitationFormatter
 
-vector_store = ChromaVectorStore()
-retriever = VectorRetriever(vector_store=vector_store)
-generator = RAGGenerator()
+_runtime_lock = threading.Lock()
+_runtime = None
 
 
-def process_ingestion(files: List[Any], reset_db: bool) -> tuple[str, str]:
+def get_runtime():
+    """Initialize database and retrieval only inside an authenticated callback."""
+    global _runtime
+    if _runtime is None:
+        with _runtime_lock:
+            if _runtime is None:
+                store = ChromaVectorStore()
+                _runtime = (
+                    store,
+                    VectorRetriever(vector_store=store),
+                    RAGGenerator(),
+                )
+    return _runtime
+
+
+def process_ingestion(files: List[Any]) -> tuple[str, str]:
+    vector_store, _, _ = get_runtime()
     if not files:
         return "⚠️ Please select at least one PDF or TXT file to ingest.", get_db_stats()
 
@@ -36,7 +52,7 @@ def process_ingestion(files: List[Any], reset_db: bool) -> tuple[str, str]:
                 f_out.write(f_in.read())
         saved_paths.append(dest_path)
 
-    result = ingest_documents(path=data_dir, vector_store=vector_store, reset=reset_db)
+    result = ingest_documents(path=data_dir, vector_store=vector_store, reset=False)
     status_msg = f"**Status**: {result.get('status', '').upper()}\n\n{result.get('message', '')}\n\n"
     status_msg += f"- **Files Processed**: {result.get('files_processed', 0)}\n"
     status_msg += f"- **Pages Processed**: {result.get('pages_processed', 0)}\n"
@@ -50,6 +66,7 @@ def handle_query(query: str, top_k: int, history: List[Dict[str, str]]) -> tuple
     if not query or not query.strip():
         return history, ""
 
+    vector_store, retriever, generator = get_runtime()
     if vector_store.get_count() == 0:
         warning_msg = "⚠️ The document vector database is empty. Please upload and ingest a document first."
         history.append({"role": "user", "content": query})
@@ -76,12 +93,8 @@ def handle_query(query: str, top_k: int, history: List[Dict[str, str]]) -> tuple
     return history, ""
 
 
-def handle_clear_db() -> tuple[str, str, List[Dict[str, str]]]:
-    vector_store.reset()
-    return "🧹 Vector database has been completely reset.", get_db_stats(), []
-
-
 def get_db_stats() -> str:
+    vector_store, _, _ = get_runtime()
     count = vector_store.get_count()
     return f"**Indexed Chunks in Vector DB**: `{count}`"
 
@@ -118,11 +131,9 @@ with gr.Blocks(title="Ask My Docs — RAG Document Assistant", css=custom_css, t
                 file_count="multiple",
                 file_types=[".pdf", ".txt", ".md"]
             )
-            reset_checkbox = gr.Checkbox(label="Reset database before ingesting", value=False)
             ingest_btn = gr.Button("🚀 Ingest Documents", variant="primary")
             ingest_status = gr.Markdown()
-            db_stats = gr.Markdown(value=get_db_stats())
-            clear_db_btn = gr.Button("🗑️ Clear Vector Database", variant="secondary")
+            db_stats = gr.Markdown(value="Sign in to view indexed document statistics.")
 
         with gr.Column(scale=2):
             gr.Markdown("### 💬 Interactive Q&A Session")
@@ -144,7 +155,7 @@ with gr.Blocks(title="Ask My Docs — RAG Document Assistant", css=custom_css, t
 
     ingest_btn.click(
         fn=process_ingestion,
-        inputs=[file_input, reset_checkbox],
+        inputs=[file_input],
         outputs=[ingest_status, db_stats]
     )
 
@@ -158,12 +169,6 @@ with gr.Blocks(title="Ask My Docs — RAG Document Assistant", css=custom_css, t
         fn=handle_query,
         inputs=[query_input, top_k_slider, chatbot],
         outputs=[chatbot, query_input]
-    )
-
-    clear_db_btn.click(
-        fn=handle_clear_db,
-        inputs=[],
-        outputs=[ingest_status, db_stats, chatbot]
     )
 
 if __name__ == "__main__":

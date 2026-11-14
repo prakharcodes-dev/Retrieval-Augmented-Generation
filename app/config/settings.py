@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 700
     CHUNK_OVERLAP: int = 100
     TOP_K: int = 4
+    DENSE_CANDIDATE_K: int = 20
+    SPARSE_CANDIDATE_K: int = 20
+    RRF_K: int = 60
+    RETRIEVAL_FUSION: str = "rrf"
     MAX_FILE_SIZE_MB: int = 25
     MAX_PDF_PAGES: int = 150
 
@@ -54,6 +58,19 @@ class Settings(BaseSettings):
     CHROMA_PERSIST_DIR: str = "./vectorstore"
     COLLECTION_NAME: str = "rag_documents"
     PROMPT_PATH: str = "./prompts/rag_answer_v1.txt"
+
+    @staticmethod
+    def _coerce_override(key: str, value: Any) -> Any:
+        if value is None:
+            return None
+        if key in {
+            "TOP_K", "DENSE_CANDIDATE_K", "SPARSE_CANDIDATE_K", "RRF_K",
+            "CHUNK_SIZE", "CHUNK_OVERLAP", "MAX_FILE_SIZE_MB", "MAX_PDF_PAGES",
+        }:
+            return int(value)
+        if key == "LLM_TEMPERATURE":
+            return float(value)
+        return value
 
     def __init__(self, **values: Any):
         super().__init__(**values)
@@ -64,6 +81,10 @@ class Settings(BaseSettings):
             self.CHUNK_OVERLAP = yaml_cfg["chunking"].get("chunk_overlap", self.CHUNK_OVERLAP)
         if "retrieval" in yaml_cfg:
             self.TOP_K = yaml_cfg["retrieval"].get("vector_top_k", self.TOP_K)
+            self.DENSE_CANDIDATE_K = yaml_cfg["retrieval"].get("dense_candidate_k", self.DENSE_CANDIDATE_K)
+            self.SPARSE_CANDIDATE_K = yaml_cfg["retrieval"].get("sparse_candidate_k", self.SPARSE_CANDIDATE_K)
+            self.RRF_K = yaml_cfg["retrieval"].get("rrf_k", self.RRF_K)
+            self.RETRIEVAL_FUSION = yaml_cfg["retrieval"].get("fusion", self.RETRIEVAL_FUSION)
         if "vector_store" in yaml_cfg:
             self.VECTOR_STORE_PROVIDER = yaml_cfg["vector_store"].get("provider", self.VECTOR_STORE_PROVIDER)
             self.CHROMA_PERSIST_DIR = yaml_cfg["vector_store"].get("persist_dir", self.CHROMA_PERSIST_DIR)
@@ -93,25 +114,26 @@ class Settings(BaseSettings):
             "LLM_PROVIDER", "LLM_MODEL", "LLM_TEMPERATURE", "GROQ_FALLBACK_MODEL",
             "EMBEDDING_PROVIDER", "EMBEDDING_MODEL",
             "VECTOR_STORE_PROVIDER", "CHROMA_PERSIST_DIR", "COLLECTION_NAME",
+            "TOP_K", "DENSE_CANDIDATE_K", "SPARSE_CANDIDATE_K", "RRF_K", "RETRIEVAL_FUSION",
         )
         local_env = dotenv_values(Path(".env"))
         for key in config_keys:
             value = local_env.get(key)
             if value is not None:
-                setattr(self, key, value)
+                setattr(self, key, self._coerce_override(key, value))
 
         # Streamlit secrets are optional during CLI use and local development.
         try:
             import streamlit as st
             for key in config_keys:
                 if key in st.secrets:
-                    setattr(self, key, st.secrets[key])
+                    setattr(self, key, self._coerce_override(key, st.secrets[key]))
         except Exception:
             pass
 
         for key in config_keys:
             if key in os.environ:
-                setattr(self, key, os.environ[key])
+                setattr(self, key, self._coerce_override(key, os.environ[key]))
 
         # A legacy Streamlit secret or environment variable can override config.yaml.
         # Migrate the retired Gemini model so an old LLM_MODEL override cannot
